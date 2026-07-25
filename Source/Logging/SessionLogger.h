@@ -9,11 +9,13 @@
 
         measurementQueue.popAll ([&] (const Measurement& m) {
             sessionLogger.logMeasurement (m);          // if logging active
-            /* also update meters/plots */ });
+            // also update meters/plots
+        });
         eventQueue.popAll ([&] (const Event& e) {
             auto desc = SessionLogger::composeDescription (e);
             sessionLogger.logEvent (e, desc);          // if logging active
-            /* also append to live log window, maybe notify */ });
+            // also append to live log window, maybe notify
+        });
 
     Note the deliberate decoupling in the product: "Start/Stop Audio" runs the
     engine and drains the queues for the live UI regardless; "Start/Stop

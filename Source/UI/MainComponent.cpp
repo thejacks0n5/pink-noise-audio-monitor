@@ -638,7 +638,9 @@ SessionInfo MainComponent::buildSessionInfo() const
 
 juce::File MainComponent::getLogBaseFolder() const
 {
-    const auto stored = appProperties.getUserSettings()->getValue ("logBaseFolder", {});
+    // getUserSettings() is non-const in JUCE; this accessor is logically const.
+    auto& props = const_cast<juce::ApplicationProperties&> (appProperties);
+    const auto stored = props.getUserSettings()->getValue ("logBaseFolder", {});
 
     if (stored.isNotEmpty())
         return juce::File (stored);

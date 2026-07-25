@@ -128,7 +128,10 @@ private:
     float   previousGainLinear   { 0.0f };
     int64_t samplesSinceStart    { 0 };
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioEngine)
+    // Copy ctor/assignment are already deleted explicitly above, so use the
+    // leak-detector-only macro here (the NON_COPYABLE variant would redeclare
+    // them and fail to compile).
+    JUCE_LEAK_DETECTOR (AudioEngine)
 };
 
 } // namespace pnam

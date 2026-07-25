@@ -18,10 +18,12 @@ void NotificationEngine::initialise()
     auto* notificationInstance = juce::PushNotifications::getInstance();
     if (notificationInstance != nullptr)
     {
-        notificationInstance->requestPermissionsWithSettings (
-            juce::PushNotifications::Permission::lockScreen |
-            juce::PushNotifications::Permission::alert |
-            juce::PushNotifications::Permission::sound);
+        juce::PushNotifications::Settings settings;
+        settings.allowAlert = true;
+        settings.allowBadge = true;
+        settings.allowSound = true;
+
+        notificationInstance->requestPermissionsWithSettings (settings);
 
         // Conservative: assume available if the API is present.
         // A denied permission will result in unavailable posts (no error).

@@ -7,6 +7,8 @@
 
 #include "DarkLookAndFeel.h"
 
+#include "../Model/DataModel.h"   // Severity, used by Palette::severityColour
+
 namespace pnam
 {
 
@@ -330,7 +332,7 @@ void DarkLookAndFeel::drawGroupComponentOutline (juce::Graphics& g, int w, int h
                                                  juce::GroupComponent& group)
 {
     const float textH = 15.0f;
-    juce::Font font (juce::FontOptions (textH));
+    juce::Font font { juce::FontOptions (textH) };
     juce::Rectangle<int> bounds (0, 0, w, h);
     juce::Rectangle<int> top = bounds.removeFromTop ((int) textH + 4);
 

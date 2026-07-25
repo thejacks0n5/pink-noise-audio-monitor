@@ -10,6 +10,15 @@
 namespace pnam
 {
 
+namespace
+{
+    /*  juce::String's const char* constructor asserts on any byte > 127, so the
+        non-ASCII glyphs used in the status bar must be built via fromUTF8.
+        These fired ~30x/sec (once per timer tick) before being routed here. */
+    static const juce::String kEmDash   = juce::String::fromUTF8 ("\xe2\x80\x94");  // U+2014 —
+    static const juce::String kEllipsis = juce::String::fromUTF8 ("\xe2\x80\xa6");  // U+2026 …
+}
+
 //==============================================================================
 TopStatusBar::TopStatusBar()
 {
@@ -32,13 +41,13 @@ TopStatusBar::TopStatusBar()
     loggingCell.hasLamp = true;
     loggingCell.lamp    = Palette::get (Palette::statusIdle);
 
-    durationCell.value  = "—";
+    durationCell.value  = kEmDash;
     modeCell.value       = "Pink noise loopback";
-    outDeviceCell.value  = "—";
-    inDeviceCell.value   = "—";
-    channelsCell.value   = "—";
-    rateCell.value       = "—";
-    bufferCell.value     = "—";
+    outDeviceCell.value  = kEmDash;
+    inDeviceCell.value   = kEmDash;
+    channelsCell.value   = kEmDash;
+    rateCell.value       = kEmDash;
+    bufferCell.value     = kEmDash;
     appStatusCell.value  = "Idle";
 }
 
@@ -68,7 +77,7 @@ void TopStatusBar::updateCell (Cell& cell, const juce::String& newValue, juce::C
 juce::String TopStatusBar::formatDuration (double seconds)
 {
     if (seconds < 0.0)
-        return "—";
+        return kEmDash;
 
     const int totalSeconds = (int) seconds;
     const int hh = totalSeconds / 3600;
@@ -97,7 +106,7 @@ void TopStatusBar::setAudioEngineState (EngineState state)
     switch (state)
     {
         case EngineState::stopped:     text = "Stopped";     lamp = Palette::get (Palette::statusIdle);       break;
-        case EngineState::starting:    text = "Starting…";   lamp = Palette::get (Palette::statusPaused);     break;
+        case EngineState::starting:    text = ("Starting" + kEllipsis);   lamp = Palette::get (Palette::statusPaused);     break;
         case EngineState::running:     text = "Running";     lamp = Palette::get (Palette::statusRunning);    break;
         case EngineState::deviceError: text = "Device error"; lamp = Palette::get (Palette::severityCritical); break;
     }
@@ -130,12 +139,12 @@ void TopStatusBar::setLoggingState (LoggingState state)
 
 void TopStatusBar::setOutputDeviceName (const juce::String& name)
 {
-    updateCell (outDeviceCell, name.isNotEmpty() ? name : juce::String ("—"), {}, true);
+    updateCell (outDeviceCell, name.isNotEmpty() ? name : kEmDash, {}, true);
 }
 
 void TopStatusBar::setInputDeviceName (const juce::String& name)
 {
-    updateCell (inDeviceCell, name.isNotEmpty() ? name : juce::String ("—"), {}, true);
+    updateCell (inDeviceCell, name.isNotEmpty() ? name : kEmDash, {}, true);
 }
 
 void TopStatusBar::setChannelConfig (int numOutputChannels, int numInputChannels)
@@ -152,7 +161,7 @@ void TopStatusBar::setSampleRate (double sampleRateHz)
 
     juce::String text = sampleRateHz > 0.0
         ? juce::String (sampleRateHz / 1000.0, 1) + " kHz"
-        : juce::String ("—");
+        : kEmDash;
 
     updateCell (rateCell, text, {}, true);
 }
@@ -161,7 +170,7 @@ void TopStatusBar::setBufferSize (int bufferSizeSamples)
 {
     if (bufferSizeSamples <= 0)
     {
-        updateCell (bufferCell, "—", {}, true);
+        updateCell (bufferCell, kEmDash, {}, true);
         return;
     }
 

@@ -109,7 +109,11 @@ void CsvWriter::flush()
 {
     if (stream != nullptr)
     {
-        if (! stream->flush())
+        // juce::OutputStream::flush() returns void; FileOutputStream reports
+        // failures via getStatus().
+        stream->flush();
+
+        if (stream->getStatus().failed())
             writeErrorFlag = true;
     }
 }
