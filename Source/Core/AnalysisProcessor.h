@@ -58,6 +58,10 @@ struct BlockStats
     /** Which output each input was compared against, so the EventDetector can
         quote the right reference level without needing the mapping itself. */
     int32_t referenceOutputForInput[maxChannels] {};
+
+    /** Whether each input participates in fault detection (see
+        SessionInfo::inputMonitored). Levels are measured regardless. */
+    bool    inputMonitored[maxChannels] {};
     int32_t clipCount  { 0 };                 ///< Input samples at/above clip threshold, all channels.
     int32_t clipCountPerChannel[maxChannels] {};  ///< Same, split per input channel.
     int32_t statusCode { StatusBits::ok };    ///< StatusBits snapshot (mute/fade/settling...).
@@ -178,6 +182,19 @@ public:
         return referenceOutputForInput[clampChannel (inputChannel)].load (std::memory_order_relaxed);
     }
 
+    /** MESSAGE THREAD. Excludes an input from fault detection without hiding its
+        levels — for inputs with nothing patched into them, which would otherwise
+        sit below the dropout threshold and report a permanent critical fault. */
+    void setInputMonitored (int inputChannel, bool shouldMonitor) noexcept
+    {
+        inputMonitoredFlags[clampChannel (inputChannel)].store (shouldMonitor, std::memory_order_relaxed);
+    }
+
+    bool isInputMonitored (int inputChannel) const noexcept
+    {
+        return inputMonitoredFlags[clampChannel (inputChannel)].load (std::memory_order_relaxed);
+    }
+
     /** Any thread (UI button). Clears held peaks to silenceFloorDb. */
     void resetPeakHold() noexcept;
 
@@ -228,6 +245,9 @@ private:
 
     /** Which output each input is compared against (see setReferenceOutputForInput). */
     std::atomic<int>    referenceOutputForInput[maxChannels];
+
+    /** Per-input detection enable (see setInputMonitored). */
+    std::atomic<bool>   inputMonitoredFlags[maxChannels];
     std::atomic<double> atomicElapsedSeconds { 0.0 };
 };
 

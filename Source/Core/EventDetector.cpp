@@ -246,6 +246,17 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
 
     for (int ch = 0; ch < numCh; ++ch)
     {
+        // An input the user isn't monitoring (nothing patched in) must not report
+        // faults: it sits below the dropout threshold forever. Close out anything
+        // already in flight so a start event can't be left without its end.
+        if (! stats.inputMonitored[ch])
+        {
+            dropoutState[ch]     = ConditionState{};
+            clippingState[ch]    = ConditionState{};
+            levelChangeState[ch] = ConditionState{};
+            continue;
+        }
+
         const int refCh = juce::jlimit (0, juce::jmax (0, stats.numOutputChannels - 1),
                                         stats.referenceOutputForInput[ch]);
 

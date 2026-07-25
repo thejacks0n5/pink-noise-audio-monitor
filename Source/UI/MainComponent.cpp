@@ -75,17 +75,20 @@ namespace
     {
     public:
         ChannelSetupPanel (juce::StringArray& outNames, juce::StringArray& inNames,
-                           juce::Array<int>& refs, std::function<void()> onChanged)
+                           juce::Array<int>& refs, juce::Array<bool>& monitored,
+                           std::function<void()> onChanged)
             : outputNames (outNames), inputNames (inNames),
-              referenceForInput (refs), changed (std::move (onChanged))
+              referenceForInput (refs), monitoredInput (monitored),
+              changed (std::move (onChanged))
         {
             addAndMakeVisible (heading);
-            heading.setText ("Name each channel. Names label the meters, the CSV columns and the event log.",
+            heading.setText ("Name each channel. Untick Monitor for inputs with nothing patched in, "
+                             "so they are not reported as permanent dropouts.",
                              juce::dontSendNotification);
             heading.setJustificationType (juce::Justification::centredLeft);
 
             buildRows();
-            setSize (560, juce::jlimit (220, 640, 84 + 30 * (outputNames.size() + inputNames.size() + 2)));
+            setSize (660, juce::jlimit (220, 640, 96 + 30 * (outputNames.size() + inputNames.size() + 2)));
         }
 
         void resized() override
@@ -98,6 +101,12 @@ namespace
                 auto r = bounds.removeFromTop (26);
                 row->label->setBounds (r.removeFromLeft (90));
                 row->editor->setBounds (r.removeFromLeft (200).reduced (0, 2));
+
+                if (row->monitor != nullptr)
+                {
+                    r.removeFromLeft (8);
+                    row->monitor->setBounds (r.removeFromLeft (86).reduced (0, 2));
+                }
 
                 if (row->reference != nullptr)
                 {
@@ -114,7 +123,8 @@ namespace
         {
             std::unique_ptr<juce::Label> label;
             std::unique_ptr<juce::TextEditor> editor;
-            std::unique_ptr<juce::ComboBox> reference;   // inputs only
+            std::unique_ptr<juce::ComboBox> reference;      // inputs only
+            std::unique_ptr<juce::ToggleButton> monitor;    // inputs only
         };
 
         void buildRows()
@@ -139,6 +149,18 @@ namespace
 
                 if (isInput)
                 {
+                    row->monitor = std::make_unique<juce::ToggleButton> ("Monitor");
+                    while (monitoredInput.size() <= index)
+                        monitoredInput.add (true);
+
+                    row->monitor->setToggleState (monitoredInput[index], juce::dontSendNotification);
+                    row->monitor->onClick = [this, index, tb = row->monitor.get()]
+                    {
+                        monitoredInput.set (index, tb->getToggleState());
+                        if (changed) changed();
+                    };
+                    addAndMakeVisible (*row->monitor);
+
                     row->reference = std::make_unique<juce::ComboBox>();
                     for (int o = 0; o < outputNames.size(); ++o)
                         row->reference->addItem ("ref: " + outputNames[o], o + 1);
@@ -172,6 +194,7 @@ namespace
         juce::StringArray& outputNames;
         juce::StringArray& inputNames;
         juce::Array<int>&  referenceForInput;
+        juce::Array<bool>& monitoredInput;
         std::function<void()> changed;
 
         juce::Label heading;
@@ -934,7 +957,8 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
     const auto setup    = deviceManager.getAudioDeviceSetup();
     auto* currentDevice = deviceManager.getCurrentAudioDevice();
 
-    constexpr int openFullSetupId = 10000;
+    constexpr int openFullSetupId    = 10000;
+    constexpr int openChannelNamesId = 10001;
 
     juce::PopupMenu menu;
     juce::StringArray deviceNames;   // populated for the two device cells
@@ -1046,6 +1070,10 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
     }
 
     menu.addSeparator();
+
+    if (cellId == TopStatusBar::CellId::channels)
+        menu.addItem (openChannelNamesId, "Channel Names...");
+
     menu.addItem (openFullSetupId, "Audio Device Setup...");
 
     juce::Component::SafePointer<MainComponent> safeThis (this);
@@ -1059,6 +1087,12 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
         if (result == openFullSetupId)
         {
             safeThis->openAudioDeviceSetup();
+            return;
+        }
+
+        if (result == openChannelNamesId)
+        {
+            safeThis->openChannelSetup();
             return;
         }
 
@@ -1168,6 +1202,7 @@ SessionInfo MainComponent::buildSessionInfo() const
         info.inputChannelNames.add (ch < inputChannelNames.size() ? inputChannelNames[ch]
                                                                    : "In " + juce::String (ch + 1));
         info.referenceOutputForInput.add (ch < referenceOutputForInput.size() ? referenceOutputForInput[ch] : 0);
+        info.inputMonitored.add (ch < inputMonitored.size() ? inputMonitored[ch] : true);
     }
     info.pinkNoiseSeed     = engine->getGenerator().getSeed();
     info.outputLevelDb     = engine->getGenerator().getLevelDb();
@@ -1191,7 +1226,7 @@ void MainComponent::openChannelSetup()
     refreshChannelConfig();   // make sure the arrays match the current device
 
     auto* content = new ChannelSetupPanel (outputChannelNames, inputChannelNames,
-                                           referenceOutputForInput,
+                                           referenceOutputForInput, inputMonitored,
                                            [this]
                                            {
                                                saveChannelConfig();
@@ -1243,13 +1278,19 @@ void MainComponent::refreshChannelConfig()
         referenceOutputForInput.add (juce::jlimit (0, juce::jmax (0, outs - 1),
                                                    referenceOutputForInput.size()));
 
+    while (inputMonitored.size() < ins)
+        inputMonitored.add (true);
+
     // Clamp any stale mapping left over from a device with more outputs.
     for (int i = 0; i < referenceOutputForInput.size(); ++i)
         referenceOutputForInput.set (i, juce::jlimit (0, juce::jmax (0, outs - 1),
                                                       referenceOutputForInput[i]));
 
     for (int i = 0; i < ins; ++i)
+    {
         engine->getAnalysis().setReferenceOutputForInput (i, referenceOutputForInput[i]);
+        engine->getAnalysis().setInputMonitored (i, inputMonitored[i]);
+    }
 
     refMeter.setNumChannels (juce::jmax (1, outs));
     refMeter.setChannelNames (outputChannelNames);
@@ -1267,6 +1308,11 @@ void MainComponent::loadChannelConfig()
     outputChannelNames.clear();
     inputChannelNames.clear();
     referenceOutputForInput.clear();
+
+    inputMonitored.clear();
+    for (const auto& token : juce::StringArray::fromTokens (settings->getValue ("inputMonitored", {}), ",", {}))
+        if (token.trim().isNotEmpty())
+            inputMonitored.add (token.trim() != "0");
 
     outputChannelNames.addTokens (settings->getValue ("outputChannelNames", {}), "\n", {});
     inputChannelNames.addTokens  (settings->getValue ("inputChannelNames",  {}), "\n", {});
@@ -1289,6 +1335,11 @@ void MainComponent::saveChannelConfig()
     settings->setValue ("outputChannelNames", outputChannelNames.joinIntoString ("\n"));
     settings->setValue ("inputChannelNames",  inputChannelNames.joinIntoString ("\n"));
     settings->setValue ("referenceOutputForInput", refs.joinIntoString (","));
+
+    juce::StringArray mon;
+    for (auto m : inputMonitored)
+        mon.add (m ? "1" : "0");
+    settings->setValue ("inputMonitored", mon.joinIntoString (","));
     settings->saveIfNeeded();
 }
 

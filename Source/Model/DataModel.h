@@ -204,6 +204,12 @@ struct SessionInfo
     /** referenceOutputForInput[i] = which output channel input i is compared
         against. Recorded so a log can be interpreted after the fact. */
     juce::Array<int>  referenceOutputForInput;
+
+    /** inputMonitored[i] = whether input i takes part in fault detection. An
+        unpatched input sits below the dropout threshold forever, so leaving it
+        monitored would report a permanent critical dropout and set dropout_flag
+        on every row. Levels are still measured and logged either way. */
+    juce::Array<bool> inputMonitored;
     juce::String inputDeviceName;          ///< As reported by juce::AudioDeviceManager.
     juce::String outputDeviceName;
     uint64_t     pinkNoiseSeed   { 0 };    ///< Seed given to PinkNoiseGenerator (deterministic replay).

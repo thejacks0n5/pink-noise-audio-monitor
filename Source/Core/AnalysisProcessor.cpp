@@ -99,6 +99,10 @@ void AnalysisProcessor::prepare (double newSampleRate, int maximumBlockSize, int
         // Default pairing: input n references output n, clamped to what exists.
         referenceOutputForInput[ch].store (juce::jlimit (0, juce::jmax (0, numOutCh - 1), ch),
                                            std::memory_order_relaxed);
+
+        // Monitored unless the user turns it off; MainComponent re-applies the
+        // saved per-channel choice right after the device is prepared.
+        inputMonitoredFlags[ch].store (true, std::memory_order_relaxed);
     }
 
     intervalClipCount    = 0;
@@ -229,6 +233,7 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
                                         referenceOutputForInput[ch].load (std::memory_order_relaxed));
         stats.gainDiffDb[ch] = rmsDb - stats.refRmsDb[refCh];
         stats.referenceOutputForInput[ch] = refCh;
+        stats.inputMonitored[ch] = inputMonitoredFlags[ch].load (std::memory_order_relaxed);
 
         atomicInPeakDb[ch].store (peakDb, std::memory_order_relaxed);
         atomicInRmsDb[ch].store (rmsDb, std::memory_order_relaxed);

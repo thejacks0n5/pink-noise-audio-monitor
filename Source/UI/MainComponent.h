@@ -220,6 +220,11 @@ private:
     juce::StringArray outputChannelNames, inputChannelNames;
     juce::Array<int>  referenceOutputForInput;
 
+    /** Per-input detection enable. Unticked inputs still meter and log levels
+        but are excluded from dropout/clip/level-change detection — an unpatched
+        input would otherwise report a permanent critical dropout. */
+    juce::Array<bool> inputMonitored;
+
     juce::Component::SafePointer<juce::DialogWindow> channelSetupWindow;
 
     /** Drops a PopupMenu under a clicked TopStatusBar cell letting the user
