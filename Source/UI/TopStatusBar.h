@@ -38,7 +38,7 @@ public:
     /** Identifies a cell for the onCellClicked callback. The device/rate/buffer
         cells are click-to-edit; the rest are display-only. */
     enum class CellId { none, audio, logging, duration, mode,
-                        outDevice, inDevice, channels, rate, buffer, appStatus };
+                        outDevice, inDevice, outChannels, inChannels, rate, buffer, appStatus };
 
     /** Assigned by MainComponent. Fired when the user clicks an interactive
         cell; the rectangle is that cell's bounds in screen coordinates, so the
@@ -73,8 +73,8 @@ public:
     void setOutputDeviceName (const juce::String& name);   // "—" when none
     void setInputDeviceName  (const juce::String& name);
 
-    /** Active channel layout, e.g. out=2 in=2 renders "2 out / 2 in
-        (stereo)". */
+    /** Active channel counts. Rendered as two independent cells (OUT CH / IN CH)
+        so the user can change each side on its own. Pass 0 to show "—". */
     void setChannelConfig (int numOutputChannels, int numInputChannels);
 
     /** Hz; renders "48.0 kHz". Pass 0 to show "—". */
@@ -129,8 +129,8 @@ private:
 
     // Cell order matches the layout comment in the header block.
     Cell audioCell, loggingCell, durationCell, modeCell,
-         outDeviceCell, inDeviceCell, channelsCell, rateCell, bufferCell,
-         appStatusCell;
+         outDeviceCell, inDeviceCell, outChannelsCell, inChannelsCell,
+         rateCell, bufferCell, appStatusCell;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TopStatusBar)
 };

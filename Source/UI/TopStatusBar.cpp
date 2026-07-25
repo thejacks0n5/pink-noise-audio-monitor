@@ -28,7 +28,8 @@ TopStatusBar::TopStatusBar()
     modeCell.caption       = "MODE";
     outDeviceCell.caption  = "OUT";
     inDeviceCell.caption   = "IN";
-    channelsCell.caption   = "CH";
+    outChannelsCell.caption = "OUT CH";
+    inChannelsCell.caption  = "IN CH";
     rateCell.caption       = "RATE";
     bufferCell.caption     = "BUFFER";
     appStatusCell.caption  = {};
@@ -45,7 +46,8 @@ TopStatusBar::TopStatusBar()
     modeCell.value       = "Pink noise loopback";
     outDeviceCell.value  = kEmDash;
     inDeviceCell.value   = kEmDash;
-    channelsCell.value   = kEmDash;
+    outChannelsCell.value = kEmDash;
+    inChannelsCell.value  = kEmDash;
     rateCell.value       = kEmDash;
     bufferCell.value     = kEmDash;
     appStatusCell.value  = "Idle";
@@ -56,7 +58,8 @@ TopStatusBar::TopStatusBar()
     modeCell.id      = CellId::mode;
     outDeviceCell.id = CellId::outDevice;
     inDeviceCell.id  = CellId::inDevice;
-    channelsCell.id  = CellId::channels;
+    outChannelsCell.id = CellId::outChannels;
+    inChannelsCell.id  = CellId::inChannels;
     rateCell.id      = CellId::rate;
     bufferCell.id    = CellId::buffer;
     appStatusCell.id = CellId::appStatus;
@@ -64,7 +67,8 @@ TopStatusBar::TopStatusBar()
     // The audio-device cells are click-to-edit; everything else is display-only.
     outDeviceCell.interactive = true;
     inDeviceCell.interactive  = true;
-    channelsCell.interactive  = true;
+    outChannelsCell.interactive = true;
+    inChannelsCell.interactive  = true;
     rateCell.interactive      = true;
     bufferCell.interactive    = true;
 }
@@ -73,7 +77,8 @@ TopStatusBar::TopStatusBar()
 TopStatusBar::Cell* TopStatusBar::cellAt (juce::Point<int> p)
 {
     Cell* cells[] = { &audioCell, &loggingCell, &durationCell, &modeCell,
-                      &outDeviceCell, &inDeviceCell, &channelsCell, &rateCell, &bufferCell,
+                      &outDeviceCell, &inDeviceCell, &outChannelsCell, &inChannelsCell,
+                      &rateCell, &bufferCell,
                       &appStatusCell };
 
     for (auto* cell : cells)
@@ -215,16 +220,16 @@ void TopStatusBar::setInputDeviceName (const juce::String& name)
 
 void TopStatusBar::setChannelConfig (int numOutputChannels, int numInputChannels)
 {
-    if (numOutputChannels <= 0 && numInputChannels <= 0)
+    const auto describe = [] (int n) -> juce::String
     {
-        updateCell (channelsCell, kEmDash, {}, true);   // no device open
-        return;
-    }
+        if (n <= 0)  return kEmDash;
+        if (n == 1)  return "1 ch (mono)";
+        if (n == 2)  return "2 ch (stereo)";
+        return juce::String (n) + " ch";
+    };
 
-    juce::String modeText = (numOutputChannels <= 1 && numInputChannels <= 1) ? "mono" : "stereo";
-    juce::String text = juce::String (numOutputChannels) + " out / " + juce::String (numInputChannels)
-                       + " in (" + modeText + ")";
-    updateCell (channelsCell, text, {}, true);
+    updateCell (outChannelsCell, describe (numOutputChannels), {}, true);
+    updateCell (inChannelsCell,  describe (numInputChannels),  {}, true);
 }
 
 void TopStatusBar::setSampleRate (double sampleRateHz)
@@ -273,7 +278,8 @@ void TopStatusBar::paint (juce::Graphics& g)
     g.fillAll (Palette::get (Palette::panelBackground));
 
     Cell* cells[] = { &audioCell, &loggingCell, &durationCell, &modeCell,
-                      &outDeviceCell, &inDeviceCell, &channelsCell, &rateCell, &bufferCell,
+                      &outDeviceCell, &inDeviceCell, &outChannelsCell, &inChannelsCell,
+                      &rateCell, &bufferCell,
                       &appStatusCell };
 
     for (auto* cellPtr : cells)
@@ -363,7 +369,8 @@ void TopStatusBar::resized()
         { &modeCell,      160,  90 },
         { &outDeviceCell, 165, 100 },
         { &inDeviceCell,  175, 100 },
-        { &channelsCell,  160, 100 },
+        { &outChannelsCell, 120,  85 },
+        { &inChannelsCell,  120,  85 },
         { &rateCell,      100,  85 },
         { &bufferCell,    155, 110 },
     };

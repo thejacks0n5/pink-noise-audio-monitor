@@ -28,10 +28,12 @@ namespace
 
         Channels are shown individually rather than as stereo pairs, which is
         what makes mono input/output selectable. */
+    class ChannelSetupPanel;   // defined below; embedded in the setup dialog
+
     class DeviceSetupPanel : public juce::Component
     {
     public:
-        explicit DeviceSetupPanel (juce::AudioDeviceManager& dm)
+        DeviceSetupPanel (juce::AudioDeviceManager& dm, juce::Component* namingSection)
             : selector (dm,
                         1, maxChannels,   // input channel range  (min 1 => mono allowed)
                         1, maxChannels,   // output channel range (min 1 => mono allowed)
@@ -42,6 +44,16 @@ namespace
         {
             addAndMakeVisible (selector);
 
+            // Channel naming lives here rather than in its own dialog: device
+            // choice and channel identity are the same job.
+            if (namingSection != nullptr)
+            {
+                naming.reset (namingSection);
+                namingViewport.setViewedComponent (naming.get(), false);
+                namingViewport.setScrollBarsShown (true, false);
+                addAndMakeVisible (namingViewport);
+            }
+
             doneButton.onClick = [this]
             {
                 if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
@@ -49,7 +61,7 @@ namespace
             };
 
             addAndMakeVisible (doneButton);
-            setSize (520, 520);
+            setSize (700, naming != nullptr ? 720 : 520);
         }
 
         void resized() override
@@ -58,11 +70,25 @@ namespace
             auto footer = bounds.removeFromBottom (36);
 
             doneButton.setBounds (footer.removeFromRight (90).reduced (0, 4));
+
+            if (naming != nullptr)
+            {
+                // Split the dialog: devices on top, channel naming underneath.
+                auto namingArea = bounds.removeFromBottom (juce::jmax (140, bounds.getHeight() / 2));
+                bounds.removeFromBottom (8);
+
+                namingViewport.setBounds (namingArea);
+                naming->setSize (juce::jmax (namingArea.getWidth() - 16, 560),
+                                 naming->getHeight());
+            }
+
             selector.setBounds (bounds);
         }
 
     private:
         juce::AudioDeviceSelectorComponent selector;
+        juce::Viewport namingViewport;
+        std::unique_ptr<juce::Component> naming;
         juce::TextButton doneButton { "Done" };
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DeviceSetupPanel)
@@ -827,8 +853,18 @@ void MainComponent::openAudioDeviceSetup()
         return;
     }
 
+    refreshChannelConfig();   // size the name arrays to the current device
+
+    auto* naming = new ChannelSetupPanel (outputChannelNames, inputChannelNames,
+                                          referenceOutputForInput, inputMonitored,
+                                          [this]
+                                          {
+                                              saveChannelConfig();
+                                              refreshChannelConfig();
+                                          });
+
     juce::DialogWindow::LaunchOptions launch;
-    launch.content.setOwned (new DeviceSetupPanel (engine->getDeviceManager()));
+    launch.content.setOwned (new DeviceSetupPanel (engine->getDeviceManager(), naming));
     launch.dialogTitle = "Audio Device Setup";
     launch.dialogBackgroundColour = Palette::get (Palette::panelBackground);
     launch.escapeKeyTriggersCloseButton = true;
@@ -989,28 +1025,31 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
             break;
         }
 
-        case TopStatusBar::CellId::channels:
+        case TopStatusBar::CellId::outChannels:
+        case TopStatusBar::CellId::inChannels:
         {
-            const int activeChannels = juce::jmax (setup.inputChannels.countNumberOfSetBits(),
-                                                   setup.outputChannels.countNumberOfSetBits());
+            // Output and input counts are set independently: a rig may well feed
+            // two outputs while capturing four returns.
+            const bool forInputs = (cellId == TopStatusBar::CellId::inChannels);
 
-            // How many the hardware actually offers, so "All" is meaningful.
-            int deviceOuts = 0, deviceIns = 0;
+            const int active = forInputs ? setup.inputChannels.countNumberOfSetBits()
+                                         : setup.outputChannels.countNumberOfSetBits();
+
+            int available = 2;
             if (auto* device = deviceManager.getCurrentAudioDevice())
+                available = juce::jlimit (1, maxChannels,
+                                          forInputs ? device->getInputChannelNames().size()
+                                                    : device->getOutputChannelNames().size());
+
+            for (int n = 1; n <= available; ++n)
             {
-                deviceOuts = device->getOutputChannelNames().size();
-                deviceIns  = device->getInputChannelNames().size();
+                juce::String label = juce::String (n) + " channel" + (n == 1 ? "" : "s");
+                if (n == 1) label += " (mono)";
+                else if (n == 2) label += " (stereo)";
+
+                menu.addItem (n, label, true, n == active);
             }
 
-            const int allCh = juce::jlimit (1, maxChannels, juce::jmax (deviceOuts, deviceIns));
-
-            menu.addItem (1, "Mono (1 in / 1 out)",   true, activeChannels == 1);
-            menu.addItem (2, "Stereo (2 in / 2 out)", true, activeChannels == 2);
-
-            if (allCh > 2)
-                menu.addItem (3, "All (" + juce::String (deviceIns) + " in / "
-                                 + juce::String (deviceOuts) + " out)",
-                              true, activeChannels == allCh);
             break;
         }
 
@@ -1071,7 +1110,7 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
 
     menu.addSeparator();
 
-    if (cellId == TopStatusBar::CellId::channels)
+    if (cellId == TopStatusBar::CellId::outChannels || cellId == TopStatusBar::CellId::inChannels)
         menu.addItem (openChannelNamesId, "Channel Names...");
 
     menu.addItem (openFullSetupId, "Audio Device Setup...");
@@ -1109,28 +1148,22 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
                 newSetup.inputDeviceName = deviceNames[result - 1];
                 break;
 
-            case TopStatusBar::CellId::channels:
+            case TopStatusBar::CellId::outChannels:
+            case TopStatusBar::CellId::inChannels:
             {
-                int wantOuts = result, wantIns = result;   // 1 = mono, 2 = stereo
+                juce::BigInteger mask;
+                mask.setRange (0, juce::jlimit (1, maxChannels, result), true);
 
-                if (result == 3)   // "All"
+                if (cellId == TopStatusBar::CellId::inChannels)
                 {
-                    wantOuts = wantIns = 2;
-                    if (auto* device = dm.getCurrentAudioDevice())
-                    {
-                        wantOuts = juce::jlimit (1, maxChannels, device->getOutputChannelNames().size());
-                        wantIns  = juce::jlimit (1, maxChannels, device->getInputChannelNames().size());
-                    }
+                    newSetup.inputChannels           = mask;
+                    newSetup.useDefaultInputChannels = false;
                 }
-
-                juce::BigInteger outMask, inMask;
-                outMask.setRange (0, wantOuts, true);
-                inMask.setRange  (0, wantIns,  true);
-
-                newSetup.inputChannels             = inMask;
-                newSetup.outputChannels            = outMask;
-                newSetup.useDefaultInputChannels   = false;
-                newSetup.useDefaultOutputChannels  = false;
+                else
+                {
+                    newSetup.outputChannels           = mask;
+                    newSetup.useDefaultOutputChannels = false;
+                }
                 break;
             }
 
@@ -1217,31 +1250,9 @@ void MainComponent::openLogFileSetup()
 
 void MainComponent::openChannelSetup()
 {
-    if (channelSetupWindow != nullptr)
-    {
-        channelSetupWindow->toFront (true);
-        return;
-    }
-
-    refreshChannelConfig();   // make sure the arrays match the current device
-
-    auto* content = new ChannelSetupPanel (outputChannelNames, inputChannelNames,
-                                           referenceOutputForInput, inputMonitored,
-                                           [this]
-                                           {
-                                               saveChannelConfig();
-                                               refreshChannelConfig();
-                                           });
-
-    juce::DialogWindow::LaunchOptions launch;
-    launch.content.setOwned (content);
-    launch.dialogTitle = "Channel Names";
-    launch.dialogBackgroundColour = Palette::get (Palette::panelBackground);
-    launch.escapeKeyTriggersCloseButton = true;
-    launch.useNativeTitleBar = true;
-    launch.resizable = true;
-
-    channelSetupWindow = launch.launchAsync();
+    // Naming now lives inside the Audio Device Setup dialog, alongside the
+    // device and channel-count controls it belongs with.
+    openAudioDeviceSetup();
 }
 
 //==============================================================================
