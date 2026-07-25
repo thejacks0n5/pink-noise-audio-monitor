@@ -110,7 +110,8 @@ class AudioEngine;   // glue class — Source/Core/AudioEngine.h (ARCHITECTURE.m
 
 //==============================================================================
 class MainComponent : public juce::Component,
-                      private juce::Timer
+                      private juce::Timer,
+                      private juce::ChangeListener   // juce::AudioDeviceManager
 {
 public:
     //==========================================================================
@@ -122,6 +123,17 @@ public:
     // juce::Component
     void paint (juce::Graphics&) override;   // fills Palette::windowBackground
     void resized() override;                 // layout per the diagram above
+
+    //==========================================================================
+    // Public so the macOS main menu (Main.cpp) can drive them. Preferences lives
+    // in the application menu (Cmd-,), not on a button in the transport bar.
+    void openAudioDeviceSetup();             // modeless DialogWindow hosting a
+                                             // juce::AudioDeviceSelectorComponent
+                                             // bound to engine.getDeviceManager()
+    void openSettings();                     // modeless DialogWindow: thresholds
+                                             // (EventDetector::Thresholds),
+                                             // notification toggles, seed,
+                                             // log base folder picker
 
 private:
     //==========================================================================
@@ -156,13 +168,22 @@ private:
                                              // resetPeakHold, recaptureBaseline
     void exportSession();                    // reveals session folder in Finder /
                                              // juce::FileChooser copy-to destination
-    void openAudioDeviceSetup();             // modeless DialogWindow hosting a
-                                             // juce::AudioDeviceSelectorComponent
-                                             // bound to engine.getDeviceManager()
-    void openSettings();                     // modeless DialogWindow: thresholds
-                                             // (EventDetector::Thresholds),
-                                             // notification toggles, seed,
-                                             // log base folder picker
+
+    //==========================================================================
+    // Audio device selection (message thread)
+
+    /** juce::ChangeListener on the AudioDeviceManager: persists the device
+        selection whenever it changes, so a choice survives Start/Stop Audio and
+        app restarts. */
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;
+
+    /** Writes the manager's state to appProperties under "audioDeviceState". */
+    void saveDeviceState();
+
+    /** Drops a PopupMenu under a clicked TopStatusBar cell letting the user
+        change output/input device, channel mode, sample rate or buffer size in
+        place; each menu also offers the full Audio Device Setup dialog. */
+    void showStatusBarDeviceMenu (TopStatusBar::CellId, juce::Rectangle<int> cellScreenBounds);
 
     //==========================================================================
     // Session helpers

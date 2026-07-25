@@ -139,6 +139,46 @@ No other header was modified. All other fixes were pure `.cpp` edits.
   as a low-risk item; if a future JUCE version changes its internal include
   graph, add `#include <memory>` there.
 
+## 3b. Device-selection + UI fixes (second session, verified on hardware)
+
+Found by using the app on a real interface; all four were reported by the user.
+
+1. **"You pick a device, close the window, and nothing changes."** Two causes:
+   `AudioEngine::start()` called `deviceManager.initialiseWithDefaultDevices (2, 2)`
+   on every start, which *reset the selection to the system defaults*; and the
+   ctor never initialised the device manager at all, so the selector had no live
+   device to edit before Start Audio. Now `initialiseDevices()` runs once at
+   construction (restoring saved state) and `start()` only attaches the callback
+   / calls `restartLastAudioDevice()`. Selection is persisted to
+   `appProperties` under "audioDeviceState" via a `ChangeListener`, so it
+   survives Start/Stop **and** app restarts. Verified: the settings file records
+   `UMC404HD 192k` with `audioDeviceInChans="1"`, and it is restored on relaunch.
+2. **No mono option.** `AudioDeviceSelectorComponent` was constructed with
+   `showChannelsAsStereoPairs = true`, so channels could only be toggled in
+   pairs. Now `false`, and the channel range starts at 1 — the dialog shows
+   individual `Out 1..4` / `In 1..4` checkboxes and mono works.
+3. **No way to accept.** The selector applies changes live (there is no apply
+   step), but there was no way to confirm/dismiss. Wrapped in `DeviceSetupPanel`
+   with an explicit **Done** button.
+4. **Settings was a button.** Moved to the macOS application menu as
+   Preferences — macOS displays it as "Settings…" with Cmd-, — via a
+   `MenuBarModel` + `ApplicationCommandManager` in `Main.cpp`. An **Audio** menu
+   holds "Audio Device Setup..." (Cmd-Shift-A). The transport button is gone.
+5. **New: click-to-edit status bar.** OUT/IN/CH/RATE/BUFFER cells show a
+   chevron, highlight on hover, and open a `PopupMenu` to change the setting in
+   place; each menu also offers the full dialog. The bar now sources device
+   identity from the `AudioDeviceManager` rather than the engine's audio-thread
+   atomics, so it is populated *before* Start Audio and distinguishes the input
+   from the output device (`AudioIODevice::getName()` returns one combined name
+   for both — `session_info.txt` was recording the same string twice).
+
+Two layout overflows were found while checking the above on screen:
+`TopStatusBar`'s fixed cell widths summed to 1130 px in a 1120 px window (the
+app-status cell collapsed and BUFFER was clipped) — cells now shrink
+proportionally with per-cell minimums; and `TransportControls` laid out the
+right-aligned Audio Setup button *last*, so it collapsed to "A..." — the
+right-hand buttons are now claimed before the left-to-right run.
+
 ## 4. First build checklist (Apple Silicon macOS)
 
 1. **Toolchain**: Xcode 15+ (for a modern-enough SDK/Clang for C++20 +

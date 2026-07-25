@@ -19,6 +19,7 @@
   ==============================================================================
 */
 
+#include <functional>
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "DarkLookAndFeel.h"
@@ -33,6 +34,16 @@ public:
     //==========================================================================
     enum class EngineState  { stopped, starting, running, deviceError };
     enum class LoggingState { inactive, active, paused, writeError };
+
+    /** Identifies a cell for the onCellClicked callback. The device/rate/buffer
+        cells are click-to-edit; the rest are display-only. */
+    enum class CellId { none, audio, logging, duration, mode,
+                        outDevice, inDevice, channels, rate, buffer, appStatus };
+
+    /** Assigned by MainComponent. Fired when the user clicks an interactive
+        cell; the rectangle is that cell's bounds in screen coordinates, so the
+        handler can drop a PopupMenu directly beneath it. MESSAGE THREAD. */
+    std::function<void (CellId, juce::Rectangle<int> cellScreenBounds)> onCellClicked;
 
     /** Preferred fixed height for MainComponent::resized(). */
     static constexpr int preferredHeight = 44;
@@ -86,6 +97,11 @@ public:
     void paint (juce::Graphics&) override;    // draws all cells + dividers
     void resized() override;                  // recomputes cell rectangles
 
+    // Click-to-edit affordance for the interactive cells
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
+
 private:
     //==========================================================================
     struct Cell                    // one caption/value pair
@@ -94,11 +110,18 @@ private:
         juce::Rectangle<int> bounds;
         juce::Colour lamp { juce::Colour() };  // transparent = no lamp
         bool hasLamp = false;
+        CellId id = CellId::none;
+        bool interactive = false;  // draws a chevron + hover highlight
     };
 
     void updateCell (Cell&, const juce::String& newValue,
                      juce::Colour lampColour, bool repaintNow);
     static juce::String formatDuration (double seconds);
+
+    /** @returns the cell under the point, or nullptr. */
+    Cell* cellAt (juce::Point<int>);
+
+    CellId hoveredCell = CellId::none;
 
     EngineState  engineState  = EngineState::stopped;
     LoggingState loggingState = LoggingState::inactive;

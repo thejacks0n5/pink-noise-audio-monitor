@@ -49,6 +49,72 @@ TopStatusBar::TopStatusBar()
     rateCell.value       = kEmDash;
     bufferCell.value     = kEmDash;
     appStatusCell.value  = "Idle";
+
+    audioCell.id     = CellId::audio;
+    loggingCell.id   = CellId::logging;
+    durationCell.id  = CellId::duration;
+    modeCell.id      = CellId::mode;
+    outDeviceCell.id = CellId::outDevice;
+    inDeviceCell.id  = CellId::inDevice;
+    channelsCell.id  = CellId::channels;
+    rateCell.id      = CellId::rate;
+    bufferCell.id    = CellId::buffer;
+    appStatusCell.id = CellId::appStatus;
+
+    // The audio-device cells are click-to-edit; everything else is display-only.
+    outDeviceCell.interactive = true;
+    inDeviceCell.interactive  = true;
+    channelsCell.interactive  = true;
+    rateCell.interactive      = true;
+    bufferCell.interactive    = true;
+}
+
+//==============================================================================
+TopStatusBar::Cell* TopStatusBar::cellAt (juce::Point<int> p)
+{
+    Cell* cells[] = { &audioCell, &loggingCell, &durationCell, &modeCell,
+                      &outDeviceCell, &inDeviceCell, &channelsCell, &rateCell, &bufferCell,
+                      &appStatusCell };
+
+    for (auto* cell : cells)
+        if (! cell->bounds.isEmpty() && cell->bounds.contains (p))
+            return cell;
+
+    return nullptr;
+}
+
+void TopStatusBar::mouseDown (const juce::MouseEvent& e)
+{
+    auto* cell = cellAt (e.getPosition());
+
+    if (cell == nullptr || ! cell->interactive || onCellClicked == nullptr)
+        return;
+
+    onCellClicked (cell->id, localAreaToGlobal (cell->bounds));
+}
+
+void TopStatusBar::mouseMove (const juce::MouseEvent& e)
+{
+    auto* cell = cellAt (e.getPosition());
+    const auto nowHovered = (cell != nullptr && cell->interactive) ? cell->id : CellId::none;
+
+    if (nowHovered == hoveredCell)
+        return;
+
+    hoveredCell = nowHovered;
+    setMouseCursor (hoveredCell == CellId::none ? juce::MouseCursor::NormalCursor
+                                                : juce::MouseCursor::PointingHandCursor);
+    repaint();
+}
+
+void TopStatusBar::mouseExit (const juce::MouseEvent&)
+{
+    if (hoveredCell == CellId::none)
+        return;
+
+    hoveredCell = CellId::none;
+    setMouseCursor (juce::MouseCursor::NormalCursor);
+    repaint();
 }
 
 TopStatusBar::~TopStatusBar() = default;
@@ -149,6 +215,12 @@ void TopStatusBar::setInputDeviceName (const juce::String& name)
 
 void TopStatusBar::setChannelConfig (int numOutputChannels, int numInputChannels)
 {
+    if (numOutputChannels <= 0 && numInputChannels <= 0)
+    {
+        updateCell (channelsCell, kEmDash, {}, true);   // no device open
+        return;
+    }
+
     juce::String modeText = (numOutputChannels <= 1 && numInputChannels <= 1) ? "mono" : "stereo";
     juce::String text = juce::String (numOutputChannels) + " out / " + juce::String (numInputChannels)
                        + " in (" + modeText + ")";
@@ -210,8 +282,37 @@ void TopStatusBar::paint (juce::Graphics& g)
         if (cell.bounds.isEmpty())
             continue;
 
+        // Hover highlight so the click-to-edit cells announce themselves.
+        if (cell.interactive && cell.id == hoveredCell)
+        {
+            g.setColour (Palette::get (Palette::controlHover));
+            g.fillRoundedRectangle (cell.bounds.reduced (3, 4).toFloat(), 3.0f);
+        }
+
         auto area = cell.bounds.reduced (6, 4);
+
+        // Reserve room on the right for the disclosure chevron.
+        juce::Rectangle<int> chevronArea;
+        if (cell.interactive)
+            chevronArea = area.removeFromRight (12);
+
         auto captionArea = area.removeFromTop (12);
+
+        if (cell.interactive)
+        {
+            const float cx = (float) chevronArea.getCentreX();
+            const float cy = (float) chevronArea.getCentreY() + 3.0f;
+            const float w  = 3.5f;
+
+            juce::Path chevron;
+            chevron.startNewSubPath (cx - w, cy - w * 0.6f);
+            chevron.lineTo          (cx,     cy + w * 0.6f);
+            chevron.lineTo          (cx + w, cy - w * 0.6f);
+
+            g.setColour (Palette::get (cell.id == hoveredCell ? Palette::textPrimary
+                                                              : Palette::textSecondary));
+            g.strokePath (chevron, juce::PathStrokeType (1.2f));
+        }
 
         if (cell.hasLamp)
         {
@@ -248,17 +349,45 @@ void TopStatusBar::resized()
 {
     auto bounds = getLocalBounds();
 
-    // Fixed-width cells left-to-right, appStatus takes the remaining space.
-    audioCell.bounds     = bounds.removeFromLeft (110);
-    loggingCell.bounds   = bounds.removeFromLeft (110);
-    durationCell.bounds  = bounds.removeFromLeft (100);
-    modeCell.bounds      = bounds.removeFromLeft (160);
-    outDeviceCell.bounds = bounds.removeFromLeft (140);
-    inDeviceCell.bounds  = bounds.removeFromLeft (140);
-    channelsCell.bounds  = bounds.removeFromLeft (150);
-    rateCell.bounds      = bounds.removeFromLeft (90);
-    bufferCell.bounds    = bounds.removeFromLeft (130);
-    appStatusCell.bounds = bounds;
+    // Cells shrink proportionally rather than being clipped. The previous fixed
+    // widths summed to more than the 1120 px default window, so the app-status
+    // cell collapsed to nothing and BUFFER ran off the right edge — and the
+    // interactive cells now also need room for their chevron.
+    struct Spec { Cell* cell; int preferred; int minimum; };
+
+    const Spec specs[] =
+    {
+        { &audioCell,     105,  80 },
+        { &loggingCell,    95,  75 },
+        { &durationCell,   95,  75 },
+        { &modeCell,      160,  90 },
+        { &outDeviceCell, 165, 100 },
+        { &inDeviceCell,  175, 100 },
+        { &channelsCell,  160, 100 },
+        { &rateCell,      100,  85 },
+        { &bufferCell,    155, 110 },
+    };
+
+    constexpr int appStatusReserve = 90;   // keep the right-hand status readable
+
+    int preferredTotal = 0;
+    for (const auto& spec : specs)
+        preferredTotal += spec.preferred;
+
+    const int available = juce::jmax (0, bounds.getWidth() - appStatusReserve);
+    const double scale  = (available < preferredTotal && preferredTotal > 0)
+                            ? (double) available / (double) preferredTotal
+                            : 1.0;
+
+    for (const auto& spec : specs)
+    {
+        const int scaled = juce::roundToInt (spec.preferred * scale);
+        const int width  = juce::jmin (bounds.getWidth(), juce::jmax (spec.minimum, scaled));
+
+        spec.cell->bounds = bounds.removeFromLeft (width);
+    }
+
+    appStatusCell.bounds = bounds;   // whatever remains
 }
 
 } // namespace pnam

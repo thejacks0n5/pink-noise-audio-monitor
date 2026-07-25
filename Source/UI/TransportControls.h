@@ -68,8 +68,10 @@ public:
     std::function<void()>            onResetSession;
     std::function<void()>            onAddMarker;
     std::function<void()>            onExportSession;
-    std::function<void()>            onOpenSettings;
     std::function<void()>            onOpenDeviceSetup;
+    // NOTE: there is deliberately no onOpenSettings here. Preferences is a
+    // standard macOS application-menu item (Cmd-,) driven from Main.cpp, not a
+    // button in the transport bar.
 
     //==========================================================================
     // State reflection (message thread; MainComponent calls these when the
@@ -116,7 +118,6 @@ private:
     juce::TextButton resetButton        { "Reset" };
     juce::TextButton exportButton       { "Export" };
     juce::TextButton deviceSetupButton  { "Audio Setup" };
-    juce::TextButton settingsButton     { "Settings" };
 
     bool audioRunning     = false;
     bool loggingActive    = false;

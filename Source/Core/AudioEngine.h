@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <juce_core/juce_core.h>
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_devices/juce_audio_devices.h>
@@ -52,9 +53,26 @@ public:
     AudioEngine& operator= (const AudioEngine&) = delete;
 
     //==========================================================================
-    /** MESSAGE THREAD. Opens the audio device (best-effort stereo, falling
-        back to mono), registers this as the device callback, and starts the
-        generator's fade-in. @returns false if no device could be opened. */
+    /** MESSAGE THREAD. Opens/configures the audio device WITHOUT registering the
+        audio callback, so the device manager holds a real, user-editable device
+        before Start Audio is ever pressed. Call once at construction.
+
+        @param savedState  a previous createDeviceStateXml() result to restore
+                           the user's saved selection, or nullptr for system
+                           defaults.
+        @returns an empty string on success, else the device error. */
+    juce::String initialiseDevices (const juce::XmlElement* savedState);
+
+    /** MESSAGE THREAD. Serialises the current device selection so the caller can
+        persist it. @returns nullptr if there is nothing to save. */
+    std::unique_ptr<juce::XmlElement> createDeviceStateXml() const;
+
+    /** MESSAGE THREAD. Registers this as the device callback and starts the
+        generator's fade-in, reopening the last device if it was closed.
+
+        Deliberately does NOT re-select default devices: doing so would discard
+        whatever the user chose in Audio Device Setup. @returns false if no
+        device could be opened. */
     bool start();
 
     /** MESSAGE THREAD. Fades the generator out, waits (bounded) for the fade
@@ -113,6 +131,10 @@ private:
     EventDetector      eventDetector;
 
     std::atomic<bool>   running { false };
+
+    // True once initialiseDevices() has run, so start() knows the current
+    // selection is the user's and must not be replaced with system defaults.
+    bool devicesInitialised { false };
 
     std::atomic<double> currentSampleRate        { 0.0 };
     std::atomic<int>    currentBufferSize        { 0 };

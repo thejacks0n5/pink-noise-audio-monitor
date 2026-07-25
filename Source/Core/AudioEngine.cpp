@@ -37,18 +37,40 @@ AudioEngine::~AudioEngine()
 }
 
 //==============================================================================
+juce::String AudioEngine::initialiseDevices (const juce::XmlElement* savedState)
+{
+    // Restore the user's saved selection when we have one; fall back to system
+    // defaults only if that fails (selectDefaultDeviceOnFailure = true).
+    juce::String error = deviceManager.initialise (2, 2, savedState, true);
+
+    if (error.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr)
+        error = deviceManager.initialise (1, 1, savedState, true);
+
+    devicesInitialised = deviceManager.getCurrentAudioDevice() != nullptr;
+    return error;
+}
+
+std::unique_ptr<juce::XmlElement> AudioEngine::createDeviceStateXml() const
+{
+    return deviceManager.createStateXml();
+}
+
 bool AudioEngine::start()
 {
     if (running.load (std::memory_order_relaxed))
         return true;
 
-    // Best-effort: try stereo in/out first, then fall back to mono.
-    juce::String error = deviceManager.initialiseWithDefaultDevices (2, 2);
+    // Only pick devices if nobody ever configured them. Re-running initialise()
+    // here would silently throw away the user's Audio Device Setup choice.
+    if (! devicesInitialised)
+        initialiseDevices (nullptr);
 
-    if (error.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr)
-        error = deviceManager.initialiseWithDefaultDevices (1, 1);
+    // stop() closes the device but the manager remembers the setup, so this
+    // reopens exactly what the user selected.
+    if (deviceManager.getCurrentAudioDevice() == nullptr)
+        deviceManager.restartLastAudioDevice();
 
-    if (error.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr)
+    if (deviceManager.getCurrentAudioDevice() == nullptr)
         return false;
 
     samplesSinceStart = 0;

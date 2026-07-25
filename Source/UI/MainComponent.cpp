@@ -19,6 +19,55 @@ namespace pnam
 //==============================================================================
 namespace
 {
+    /** Audio Device Setup dialog content: a juce::AudioDeviceSelectorComponent
+        plus an explicit Done button.
+
+        The selector applies every change to the AudioDeviceManager immediately
+        (there is no "apply" step to forget), but users reasonably expect a way
+        to confirm and dismiss, so Done closes the enclosing DialogWindow.
+
+        Channels are shown individually rather than as stereo pairs, which is
+        what makes mono input/output selectable. */
+    class DeviceSetupPanel : public juce::Component
+    {
+    public:
+        explicit DeviceSetupPanel (juce::AudioDeviceManager& dm)
+            : selector (dm,
+                        1, 2,      // input channel range  (min 1 => mono allowed)
+                        1, 2,      // output channel range (min 1 => mono allowed)
+                        false,     // no MIDI input selector
+                        false,     // no MIDI output selector
+                        false,     // show channels individually, NOT as stereo pairs
+                        false)     // don't hide advanced options
+        {
+            addAndMakeVisible (selector);
+
+            doneButton.onClick = [this]
+            {
+                if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+                    dw->closeButtonPressed();
+            };
+
+            addAndMakeVisible (doneButton);
+            setSize (520, 520);
+        }
+
+        void resized() override
+        {
+            auto bounds = getLocalBounds().reduced (8);
+            auto footer = bounds.removeFromBottom (36);
+
+            doneButton.setBounds (footer.removeFromRight (90).reduced (0, 4));
+            selector.setBounds (bounds);
+        }
+
+    private:
+        juce::AudioDeviceSelectorComponent selector;
+        juce::TextButton doneButton { "Done" };
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DeviceSetupPanel)
+    };
+
     /** Minimal modeless settings dialog content: EventDetector thresholds,
         NotificationEngine tuning, pink-noise seed (persisted; applied at the
         next Start Audio since PinkNoiseGenerator::setSeed() is non-real-time),
@@ -192,6 +241,17 @@ MainComponent::MainComponent()
 
     notificationEngine.initialise();
 
+    // Open the device up front (restoring the user's last selection) so Audio
+    // Device Setup edits a live device before Start Audio is ever pressed, and
+    // so the status bar shows the real interface immediately.
+    {
+        const auto savedState = appProperties.getUserSettings()->getXmlValue ("audioDeviceState");
+        engine->initialiseDevices (savedState.get());
+    }
+
+    // Persist any device change the moment it happens, wherever it came from.
+    engine->getDeviceManager().addChangeListener (this);
+
     addAndMakeVisible (statusBar);
     addAndMakeVisible (transport);
     addAndMakeVisible (refMeter);
@@ -207,6 +267,11 @@ MainComponent::MainComponent()
 
     waveform.setNumInputChannels (2);   // best-guess default; corrected in startAudio()
 
+    statusBar.onCellClicked = [this] (TopStatusBar::CellId id, juce::Rectangle<int> cellBounds)
+    {
+        showStatusBarDeviceMenu (id, cellBounds);
+    };
+
     wireTransport();
     transport.setOutputLevelDb (PinkNoiseGenerator::defaultLevelDb);
 
@@ -220,6 +285,9 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
+
+    engine->getDeviceManager().removeChangeListener (this);
+    saveDeviceState();
 
     if (settingsWindow != nullptr)
         settingsWindow.deleteAndZero();
@@ -351,11 +419,37 @@ void MainComponent::updateMetersAndWaveform()
 void MainComponent::updateStatusBar()
 {
     statusBar.setSessionDuration (engine->isRunning() ? engine->getAnalysis().getElapsedSeconds() : -1.0);
-    statusBar.setSampleRate (engine->getSampleRate());
-    statusBar.setBufferSize (engine->getBufferSize());
-    statusBar.setChannelConfig (engine->getNumOutputChannels(), engine->getNumInputChannels());
-    statusBar.setOutputDeviceName (engine->getOutputDeviceName());
-    statusBar.setInputDeviceName (engine->getInputDeviceName());
+
+    // Device identity comes from the AudioDeviceManager rather than the engine's
+    // audio-thread atomics for two reasons: it is populated as soon as a device
+    // is selected (the atomics only fill in once the callback is running, so the
+    // bar read "—" until Start Audio), and it distinguishes the input from the
+    // output device, where AudioIODevice::getName() reports one combined name.
+    auto& deviceManager = engine->getDeviceManager();
+    const auto setup    = deviceManager.getAudioDeviceSetup();
+
+    statusBar.setOutputDeviceName (setup.outputDeviceName);
+    statusBar.setInputDeviceName  (setup.inputDeviceName);
+
+    if (engine->isRunning())
+    {
+        statusBar.setSampleRate (engine->getSampleRate());
+        statusBar.setBufferSize (engine->getBufferSize());
+        statusBar.setChannelConfig (engine->getNumOutputChannels(), engine->getNumInputChannels());
+    }
+    else if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        statusBar.setSampleRate (device->getCurrentSampleRate());
+        statusBar.setBufferSize (device->getCurrentBufferSizeSamples());
+        statusBar.setChannelConfig (device->getActiveOutputChannels().countNumberOfSetBits(),
+                                    device->getActiveInputChannels().countNumberOfSetBits());
+    }
+    else
+    {
+        statusBar.setSampleRate (0.0);
+        statusBar.setBufferSize (0);
+        statusBar.setChannelConfig (0, 0);
+    }
 }
 
 void MainComponent::maybeNotify (const Event& e, const juce::String& description)
@@ -386,7 +480,6 @@ void MainComponent::wireTransport()
     transport.onAddMarker     = [this] { addManualMarker(); };
     transport.onExportSession = [this] { exportSession(); };
 
-    transport.onOpenSettings    = [this] { openSettings(); };
     transport.onOpenDeviceSetup = [this] { openAudioDeviceSetup(); };
 }
 
@@ -571,17 +664,8 @@ void MainComponent::openAudioDeviceSetup()
         return;
     }
 
-    auto* selector = new juce::AudioDeviceSelectorComponent (engine->getDeviceManager(),
-                                                              0, 2,     // input channel range
-                                                              0, 2,     // output channel range
-                                                              false,    // no MIDI input selector
-                                                              false,    // no MIDI output selector
-                                                              true,     // show channels as stereo pairs
-                                                              false);   // don't hide advanced options
-    selector->setSize (500, 450);
-
     juce::DialogWindow::LaunchOptions launch;
-    launch.content.setOwned (selector);
+    launch.content.setOwned (new DeviceSetupPanel (engine->getDeviceManager()));
     launch.dialogTitle = "Audio Device Setup";
     launch.dialogBackgroundColour = Palette::get (Palette::panelBackground);
     launch.escapeKeyTriggersCloseButton = true;
@@ -613,6 +697,184 @@ void MainComponent::openSettings()
 }
 
 //==============================================================================
+void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* source)
+{
+    if (source == &engine->getDeviceManager())
+        saveDeviceState();
+}
+
+void MainComponent::saveDeviceState()
+{
+    if (auto stateXml = engine->createDeviceStateXml())
+        appProperties.getUserSettings()->setValue ("audioDeviceState", stateXml.get());
+    else
+        appProperties.getUserSettings()->removeValue ("audioDeviceState");
+
+    appProperties.getUserSettings()->saveIfNeeded();
+}
+
+void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
+                                             juce::Rectangle<int> cellScreenBounds)
+{
+    auto& deviceManager = engine->getDeviceManager();
+    const auto setup    = deviceManager.getAudioDeviceSetup();
+    auto* currentDevice = deviceManager.getCurrentAudioDevice();
+
+    constexpr int openFullSetupId = 10000;
+
+    juce::PopupMenu menu;
+    juce::StringArray deviceNames;   // populated for the two device cells
+    juce::Array<double> sampleRates;
+    juce::Array<int> bufferSizes;
+
+    switch (cellId)
+    {
+        case TopStatusBar::CellId::outDevice:
+        case TopStatusBar::CellId::inDevice:
+        {
+            const bool wantInputs = (cellId == TopStatusBar::CellId::inDevice);
+
+            if (auto* type = deviceManager.getCurrentDeviceTypeObject())
+            {
+                type->scanForDevices();
+                deviceNames = type->getDeviceNames (wantInputs);
+            }
+
+            const auto& active = wantInputs ? setup.inputDeviceName : setup.outputDeviceName;
+
+            for (int i = 0; i < deviceNames.size(); ++i)
+                menu.addItem (i + 1, deviceNames[i], true, deviceNames[i] == active);
+
+            if (deviceNames.isEmpty())
+                menu.addItem (-1, "No devices found", false, false);
+
+            break;
+        }
+
+        case TopStatusBar::CellId::channels:
+        {
+            const int activeChannels = juce::jmax (setup.inputChannels.countNumberOfSetBits(),
+                                                   setup.outputChannels.countNumberOfSetBits());
+
+            menu.addItem (1, "Mono (1 in / 1 out)",   true, activeChannels == 1);
+            menu.addItem (2, "Stereo (2 in / 2 out)", true, activeChannels >= 2);
+            break;
+        }
+
+        case TopStatusBar::CellId::rate:
+        {
+            if (currentDevice != nullptr)
+            {
+                sampleRates = currentDevice->getAvailableSampleRates();
+
+                for (int i = 0; i < sampleRates.size(); ++i)
+                {
+                    const auto rate = sampleRates[i];
+                    menu.addItem (i + 1,
+                                  juce::String (rate / 1000.0, rate < 100000.0 ? 1 : 0) + " kHz",
+                                  true,
+                                  std::abs (rate - setup.sampleRate) < 1.0);
+                }
+            }
+
+            if (sampleRates.isEmpty())
+                menu.addItem (-1, "Start audio to see rates", false, false);
+
+            break;
+        }
+
+        case TopStatusBar::CellId::buffer:
+        {
+            if (currentDevice != nullptr)
+            {
+                bufferSizes = currentDevice->getAvailableBufferSizes();
+
+                for (int i = 0; i < bufferSizes.size(); ++i)
+                {
+                    const auto size = bufferSizes[i];
+                    const auto ms   = setup.sampleRate > 0.0
+                                        ? " (" + juce::String (1000.0 * size / setup.sampleRate, 1) + " ms)"
+                                        : juce::String();
+
+                    menu.addItem (i + 1, juce::String (size) + " smp" + ms,
+                                  true, size == setup.bufferSize);
+                }
+            }
+
+            if (bufferSizes.isEmpty())
+                menu.addItem (-1, "Start audio to see buffer sizes", false, false);
+
+            break;
+        }
+
+        default:
+            return;   // non-interactive cell
+    }
+
+    menu.addSeparator();
+    menu.addItem (openFullSetupId, "Audio Device Setup...");
+
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (cellScreenBounds),
+                        [safeThis, cellId, deviceNames, sampleRates, bufferSizes] (int result)
+    {
+        if (safeThis == nullptr || result <= 0)
+            return;
+
+        if (result == openFullSetupId)
+        {
+            safeThis->openAudioDeviceSetup();
+            return;
+        }
+
+        auto& dm = safeThis->engine->getDeviceManager();
+        auto newSetup = dm.getAudioDeviceSetup();
+
+        switch (cellId)
+        {
+            case TopStatusBar::CellId::outDevice:
+                newSetup.outputDeviceName = deviceNames[result - 1];
+                break;
+
+            case TopStatusBar::CellId::inDevice:
+                newSetup.inputDeviceName = deviceNames[result - 1];
+                break;
+
+            case TopStatusBar::CellId::channels:
+            {
+                juce::BigInteger channels;
+                channels.setRange (0, result == 1 ? 1 : 2, true);
+
+                newSetup.inputChannels             = channels;
+                newSetup.outputChannels            = channels;
+                newSetup.useDefaultInputChannels   = false;
+                newSetup.useDefaultOutputChannels  = false;
+                break;
+            }
+
+            case TopStatusBar::CellId::rate:
+                newSetup.sampleRate = sampleRates[result - 1];
+                break;
+
+            case TopStatusBar::CellId::buffer:
+                newSetup.bufferSize = bufferSizes[result - 1];
+                break;
+
+            default:
+                return;
+        }
+
+        const auto error = dm.setAudioDeviceSetup (newSetup, true);
+
+        if (error.isNotEmpty())
+            safeThis->statusBar.setAppStatus ("Device error: " + error);
+        else
+            safeThis->saveDeviceState();   // also fires via changeListenerCallback
+    });
+}
+
+//==============================================================================
 SessionInfo MainComponent::buildSessionInfo() const
 {
     SessionInfo info;
@@ -628,8 +890,11 @@ SessionInfo MainComponent::buildSessionInfo() const
     info.bufferSize        = engine->getBufferSize();
     info.numOutputChannels = engine->getNumOutputChannels();
     info.numInputChannels  = engine->getNumInputChannels();
-    info.inputDeviceName   = engine->getInputDeviceName();
-    info.outputDeviceName  = engine->getOutputDeviceName();
+    // From the device manager, so session_info.txt records the distinct input
+    // and output devices rather than one combined AudioIODevice name.
+    const auto deviceSetup = engine->getDeviceManager().getAudioDeviceSetup();
+    info.inputDeviceName   = deviceSetup.inputDeviceName;
+    info.outputDeviceName  = deviceSetup.outputDeviceName;
     info.pinkNoiseSeed     = engine->getGenerator().getSeed();
     info.outputLevelDb     = engine->getGenerator().getLevelDb();
 

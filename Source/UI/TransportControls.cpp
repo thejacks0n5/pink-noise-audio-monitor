@@ -70,8 +70,8 @@ TransportControls::TransportControls()
     addAndMakeVisible (deviceSetupButton);
     deviceSetupButton.onClick = [this] { if (onOpenDeviceSetup != nullptr) onOpenDeviceSetup(); };
 
-    addAndMakeVisible (settingsButton);
-    settingsButton.onClick = [this] { if (onOpenSettings != nullptr) onOpenSettings(); };
+    // Settings deliberately has no button here — it lives in the macOS
+    // application menu as Preferences (Cmd-,); see Main.cpp.
 
     updateEnablement();
 }
@@ -160,6 +160,19 @@ void TransportControls::resized()
 {
     auto bounds = getLocalBounds().reduced (8, 6);
 
+    // Claim the right-hand buttons BEFORE the left-to-right run. Laying them out
+    // last meant that once the fixed widths ahead of them exceeded the window,
+    // Audio Setup got whatever scraps were left and rendered as "A...".
+    deviceSetupButton.setBounds (bounds.removeFromRight (110));
+    bounds.removeFromRight (12);
+
+    exportButton.setBounds (bounds.removeFromRight (70));
+    bounds.removeFromRight (4);
+    resetButton.setBounds (bounds.removeFromRight (70));
+    bounds.removeFromRight (4);
+    markerButton.setBounds (bounds.removeFromRight (70));
+    bounds.removeFromRight (12);
+
     startAudioButton.setBounds (bounds.removeFromLeft (90));
     bounds.removeFromLeft (4);
     stopAudioButton.setBounds (bounds.removeFromLeft (90));
@@ -175,19 +188,10 @@ void TransportControls::resized()
     muteButton.setBounds (bounds.removeFromLeft (70));
     bounds.removeFromLeft (4);
     outputLevelCaption.setBounds (bounds.removeFromLeft (46));
-    outputLevelSlider.setBounds (bounds.removeFromLeft (220));
-    bounds.removeFromLeft (12);
 
-    markerButton.setBounds (bounds.removeFromLeft (70));
-    bounds.removeFromLeft (4);
-    resetButton.setBounds (bounds.removeFromLeft (70));
-    bounds.removeFromLeft (4);
-    exportButton.setBounds (bounds.removeFromLeft (70));
-
-    // spacer, then right-aligned setup/settings buttons
-    settingsButton.setBounds (bounds.removeFromRight (90));
-    bounds.removeFromRight (4);
-    deviceSetupButton.setBounds (bounds.removeFromRight (100));
+    // The slider (plus its dBFS text box) absorbs the middle, capped so the
+    // readout never drifts far from the controls it belongs to.
+    outputLevelSlider.setBounds (bounds.removeFromLeft (juce::jmin (240, bounds.getWidth())));
 }
 
 void TransportControls::paint (juce::Graphics& g)

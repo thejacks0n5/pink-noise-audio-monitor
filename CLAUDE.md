@@ -48,12 +48,24 @@ Namespace `pnam` throughout. Modules under `Source/`:
   debounce + rate-limiting → emits `Event`s (start/end, not per-block).
 - `Core/AudioEngine` — `juce::AudioDeviceManager` + IO callback: generator → output, capture input,
   feed analysis + detection, push to queues. **No allocation or file I/O in the callback.**
+  Device lifecycle: `initialiseDevices (savedStateXml)` is called once from `MainComponent`'s ctor so
+  a real device is open (and the user's saved choice restored) *before* Start Audio. `start()` only
+  attaches the callback / reopens the last device — it must **never** call `initialiseWithDefaultDevices`,
+  which would silently discard the user's Audio Device Setup selection. `createDeviceStateXml()`
+  feeds persistence.
 - `Logging/CsvWriter` + `Logging/SessionLogger` — message-thread CSV writers; per-session folder with
   `measurements.csv`, `events.csv`, `session_info.txt`.
 - `Notifications/NotificationEngine` — rate-limited macOS desktop notifications.
 - `UI/*` — `DarkLookAndFeel`, `LevelMeterComponent`, `WaveformDisplay`, `EventLogComponent`,
   `TopStatusBar`, `TransportControls`, and `MainComponent` (the integration hub that owns everything).
-- `Main.cpp` — `juce::JUCEApplication` + `DocumentWindow` hosting `MainComponent`.
+  `TopStatusBar`'s OUT/IN/CH/RATE/BUFFER cells are click-to-edit: they fire `onCellClicked`, and
+  `MainComponent::showStatusBarDeviceMenu` drops a `PopupMenu` that changes the device in place.
+  `MainComponent` is a `juce::ChangeListener` on the `AudioDeviceManager` and persists the selection
+  to `appProperties` ("audioDeviceState") on every change.
+- `Main.cpp` — `juce::JUCEApplication` + `DocumentWindow` hosting `MainComponent`, plus the macOS main
+  menu (`MenuBarModel` + `ApplicationCommandManager`). **Preferences lives in the application menu
+  (Cmd-,), not on a transport button** — macOS renders it as "Settings…". `MainComponent::openSettings`
+  and `openAudioDeviceSetup` are public so the menu can drive them.
 
 ## The one rule that matters most (real-time safety)
 
