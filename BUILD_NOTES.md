@@ -179,6 +179,50 @@ proportionally with per-cell minimums; and `TransportControls` laid out the
 right-aligned Audio Setup button *last*, so it collapsed to "A..." — the
 right-hand buttons are now claimed before the left-to-right run.
 
+## 3c. Log integrity across audio-settings changes (verified on hardware)
+
+1. **CSV timestamps ran backwards.** `AnalysisProcessor::prepare()` zeroed
+   `samplesProcessed`, and it runs on *every* device restart — so `elapsed_s`,
+   and the `timestamp_utc` derived from it, jumped back to zero mid-session
+   whenever the device was reconfigured. A real log had rows dated 16:19
+   followed by rows dated 16:11. The clock now carries forward: `prepare()`
+   folds the previous configuration's elapsed time into `elapsedOffsetSeconds`
+   *before* adopting the new sample rate (so a rate change converts correctly),
+   and only the new `resetSessionClock()` — called from `AudioEngine::start()`,
+   with the callback detached — returns it to zero. Verified: 182 rows across
+   three reconfigurations, zero backwards jumps.
+2. **Settings changes are now logged.** New `EventType::AudioSettingsChanged`
+   (value 7, appended so existing numeric values are unchanged).
+   `MainComponent::logAudioSettingsChange()` diffs the live
+   `AudioDeviceSetup` against `lastKnownSetup` and injects one `Info` event
+   naming what moved, e.g. *"Audio settings changed: channels 1 out / 1 in ->
+   2 out / 2 in"*. Message-thread injection, same path as a manual marker;
+   written to `events.csv` when logging is active and not paused. The manager
+   broadcasts for other reasons too, so nothing is logged when the diff is empty.
+3. **Reconfiguration no longer registers as a fault.** `audioDeviceStopped()`
+   used to push an `AudioDeviceLost` warning and clear `running` on every
+   user-initiated change — a real events.csv had six of them from settings
+   changes alone, and the cleared flag would have left the session marked
+   stopped. `AudioEngine::setExpectedDeviceChange()` now brackets user-driven
+   changes (`MainComponent::applyDeviceSetup` for the status-bar menus; held for
+   the lifetime of the Audio Device Setup dialog). Detection itself was already
+   safe here — `audioDeviceAboutToStart` re-arms the 3 s `settling` window and
+   `EventDetector::prepare()` re-requests the level baseline — so no dropout or
+   level-change false positives were produced either.
+
+   **Tradeoff to be aware of:** while the flag is set, a *genuine* device
+   failure is also suppressed. That window is the duration of an explicit user
+   change, or however long the Audio Device Setup dialog stays open.
+   `audioDeviceError` is deliberately not gated.
+
+**Observed once, not fully diagnosed:** switching mono → stereo on a UMC404HD at
+192 kHz made CoreAudio renegotiate three times (visible as the three events
+above) and the session ended up stopped, needing a manual Start Audio. It
+recovered fully and came back in stereo. This may be the interface refusing an
+intermediate configuration; it could not be conclusively separated from the
+synthetic mouse input used to drive the test. Worth re-checking by hand before
+relying on mid-session channel changes during a long run.
+
 ## 4. First build checklist (Apple Silicon macOS)
 
 1. **Toolchain**: Xcode 15+ (for a modern-enough SDK/Clang for C++20 +

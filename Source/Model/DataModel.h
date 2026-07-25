@@ -37,7 +37,11 @@ enum class EventType : int32_t
     ManualMarker    = 3,  ///< User pressed "mark" in the UI (message thread origin).
     AudioDeviceLost = 4,  ///< Device stopped/changed/disappeared mid-session.
     LoggingError    = 5,  ///< CSV/file problem reported by SessionLogger (message thread origin).
-    Other           = 6
+    Other           = 6,
+    /** User changed the audio device/rate/buffer/channels (message thread origin).
+        Informational, not a fault: detection is suppressed across the
+        reconfiguration so the resulting glitch is not logged as a dropout. */
+    AudioSettingsChanged = 7
 };
 
 /** Severity used for UI colouring, CSV, and notification gating.

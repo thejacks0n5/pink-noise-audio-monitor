@@ -180,6 +180,19 @@ private:
     /** Writes the manager's state to appProperties under "audioDeviceState". */
     void saveDeviceState();
 
+    /** Compares the live device setup against lastKnownSetup and, if anything
+        differs, logs one AudioSettingsChanged event naming the change (event log
+        always; CSV when logging is active and not paused). */
+    void logAudioSettingsChange();
+
+    /** Applies a device setup with the engine bracketed by
+        setExpectedDeviceChange(), so the stop/restart it causes is not logged as
+        an AudioDeviceLost fault. @returns the device error, empty on success. */
+    juce::String applyDeviceSetup (const juce::AudioDeviceManager::AudioDeviceSetup&);
+
+    /** Last setup we reported on, so changes can be described as before → after. */
+    juce::AudioDeviceManager::AudioDeviceSetup lastKnownSetup;
+
     /** Drops a PopupMenu under a clicked TopStatusBar cell letting the user
         change output/input device, channel mode, sample rate or buffer size in
         place; each menu also offers the full Audio Device Setup dialog. */

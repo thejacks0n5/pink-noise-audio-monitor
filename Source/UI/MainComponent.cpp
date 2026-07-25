@@ -249,6 +249,10 @@ MainComponent::MainComponent()
         engine->initialiseDevices (savedState.get());
     }
 
+    // Baseline for change reporting, captured before we start listening so the
+    // initial device selection isn't reported as a "change".
+    lastKnownSetup = engine->getDeviceManager().getAudioDeviceSetup();
+
     // Persist any device change the moment it happens, wherever it came from.
     engine->getDeviceManager().addChangeListener (this);
 
@@ -339,6 +343,11 @@ void MainComponent::resized()
 //==============================================================================
 void MainComponent::timerCallback()
 {
+    // While the Audio Device Setup dialog is open, every device stop/restart is
+    // the user changing something — don't report those as faults. (Changes made
+    // from the status-bar menus are bracketed by applyDeviceSetup instead.)
+    engine->setExpectedDeviceChange (deviceSetupWindow != nullptr);
+
     drainMeasurementQueue();
     drainEventQueue();
     updateMetersAndWaveform();
@@ -673,6 +682,10 @@ void MainComponent::openAudioDeviceSetup()
     launch.resizable = true;
 
     deviceSetupWindow = launch.launchAsync();
+
+    // Take effect immediately rather than on the next timer tick, in case the
+    // user changes a device before then.
+    engine->setExpectedDeviceChange (true);
 }
 
 void MainComponent::openSettings()
@@ -699,8 +712,75 @@ void MainComponent::openSettings()
 //==============================================================================
 void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* source)
 {
-    if (source == &engine->getDeviceManager())
-        saveDeviceState();
+    if (source != &engine->getDeviceManager())
+        return;
+
+    logAudioSettingsChange();
+    saveDeviceState();
+}
+
+void MainComponent::logAudioSettingsChange()
+{
+    const auto current = engine->getDeviceManager().getAudioDeviceSetup();
+
+    const auto channelsOf = [] (const juce::AudioDeviceManager::AudioDeviceSetup& s)
+    {
+        return juce::String (s.outputChannels.countNumberOfSetBits()) + " out / "
+             + juce::String (s.inputChannels.countNumberOfSetBits()) + " in";
+    };
+
+    juce::StringArray changes;
+
+    if (current.outputDeviceName != lastKnownSetup.outputDeviceName)
+        changes.add ("output \"" + lastKnownSetup.outputDeviceName + "\" -> \"" + current.outputDeviceName + "\"");
+
+    if (current.inputDeviceName != lastKnownSetup.inputDeviceName)
+        changes.add ("input \"" + lastKnownSetup.inputDeviceName + "\" -> \"" + current.inputDeviceName + "\"");
+
+    if (std::abs (current.sampleRate - lastKnownSetup.sampleRate) > 0.5)
+        changes.add ("sample rate " + juce::String (lastKnownSetup.sampleRate, 0)
+                        + " -> " + juce::String (current.sampleRate, 0) + " Hz");
+
+    if (current.bufferSize != lastKnownSetup.bufferSize)
+        changes.add ("buffer " + juce::String (lastKnownSetup.bufferSize)
+                        + " -> " + juce::String (current.bufferSize) + " smp");
+
+    if (channelsOf (current) != channelsOf (lastKnownSetup))
+        changes.add ("channels " + channelsOf (lastKnownSetup) + " -> " + channelsOf (current));
+
+    lastKnownSetup = current;
+
+    // The manager broadcasts for reasons other than a setup change too; only log
+    // when something a reader would care about actually moved.
+    if (changes.isEmpty())
+        return;
+
+    Event e {};
+    e.type           = EventType::AudioSettingsChanged;
+    e.severity       = Severity::Info;
+    e.channel        = ChannelId::None;
+    e.elapsedSeconds = engine->getAnalysis().getElapsedSeconds();
+    e.code           = eventCodeInstant;
+
+    const auto description = "Audio settings changed: " + changes.joinIntoString (", ");
+    const auto wallClockUtc = sessionStartUtc + juce::RelativeTime (e.elapsedSeconds);
+
+    // Message-thread injection, same path as a manual marker.
+    eventLog.addEvent (e, description, wallClockUtc);
+
+    if (sessionLogger.isSessionActive() && ! loggingPaused)
+        sessionLogger.logEvent (e, description);
+}
+
+juce::String MainComponent::applyDeviceSetup (const juce::AudioDeviceManager::AudioDeviceSetup& newSetup)
+{
+    // The device stops and restarts inside setAudioDeviceSetup(); bracket it so
+    // that transition is not detected/logged as an audio fault.
+    engine->setExpectedDeviceChange (true);
+    const auto error = engine->getDeviceManager().setAudioDeviceSetup (newSetup, true);
+    engine->setExpectedDeviceChange (deviceSetupWindow != nullptr);
+
+    return error;
 }
 
 void MainComponent::saveDeviceState()
@@ -807,7 +887,12 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
             break;
         }
 
-        default:
+        case TopStatusBar::CellId::none:
+        case TopStatusBar::CellId::audio:
+        case TopStatusBar::CellId::logging:
+        case TopStatusBar::CellId::duration:
+        case TopStatusBar::CellId::mode:
+        case TopStatusBar::CellId::appStatus:
             return;   // non-interactive cell
     }
 
@@ -861,11 +946,16 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
                 newSetup.bufferSize = bufferSizes[result - 1];
                 break;
 
-            default:
+            case TopStatusBar::CellId::none:
+            case TopStatusBar::CellId::audio:
+            case TopStatusBar::CellId::logging:
+            case TopStatusBar::CellId::duration:
+            case TopStatusBar::CellId::mode:
+            case TopStatusBar::CellId::appStatus:
                 return;
         }
 
-        const auto error = dm.setAudioDeviceSetup (newSetup, true);
+        const auto error = safeThis->applyDeviceSetup (newSetup);
 
         if (error.isNotEmpty())
             safeThis->statusBar.setAppStatus ("Device error: " + error);

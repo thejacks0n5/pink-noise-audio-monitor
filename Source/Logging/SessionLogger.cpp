@@ -259,6 +259,11 @@ juce::String SessionLogger::composeDescription (const Event& e)
         case EventType::AudioDeviceLost:
             return "Audio device lost";
 
+        case EventType::AudioSettingsChanged:
+            // MainComponent supplies a specific description naming what changed;
+            // this is the fallback when the event is composed from the POD alone.
+            return "Audio settings changed";
+
         case EventType::LoggingError:
             return "Logging error";
 

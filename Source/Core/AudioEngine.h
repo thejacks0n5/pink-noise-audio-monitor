@@ -67,6 +67,24 @@ public:
         persist it. @returns nullptr if there is nothing to save. */
     std::unique_ptr<juce::XmlElement> createDeviceStateXml() const;
 
+    /** MESSAGE THREAD. Brackets a user-initiated device reconfiguration.
+
+        Changing device/rate/buffer/channels stops and restarts the device, which
+        would otherwise be reported as an AudioDeviceLost fault and would clear
+        the running flag. While this is set the expected stop is ignored, the
+        session keeps running, and MainComponent logs a single
+        AudioSettingsChanged event instead. Genuine device failures (and
+        audioDeviceError) are unaffected. */
+    void setExpectedDeviceChange (bool inProgress) noexcept
+    {
+        expectedDeviceChange.store (inProgress, std::memory_order_relaxed);
+    }
+
+    bool isExpectedDeviceChange() const noexcept
+    {
+        return expectedDeviceChange.load (std::memory_order_relaxed);
+    }
+
     /** MESSAGE THREAD. Registers this as the device callback and starts the
         generator's fade-in, reopening the last device if it was closed.
 
@@ -135,6 +153,9 @@ private:
     // True once initialiseDevices() has run, so start() knows the current
     // selection is the user's and must not be replaced with system defaults.
     bool devicesInitialised { false };
+
+    // Set by MainComponent around a user-initiated device reconfiguration.
+    std::atomic<bool> expectedDeviceChange { false };
 
     std::atomic<double> currentSampleRate        { 0.0 };
     std::atomic<int>    currentBufferSize        { 0 };

@@ -66,6 +66,12 @@ AnalysisProcessor::AnalysisProcessor (MeasurementQueue& queueToFill)
 //==============================================================================
 void AnalysisProcessor::prepare (double newSampleRate, int maximumBlockSize, int newNumInputChannels)
 {
+    // Fold whatever the previous device configuration accumulated into the
+    // session offset BEFORE adopting the new sample rate, so the clock keeps
+    // moving forward across a device restart instead of rewinding to zero.
+    if (sampleRate > 0.0 && samplesProcessed > 0)
+        elapsedOffsetSeconds += (double) samplesProcessed / sampleRate;
+
     sampleRate = newSampleRate;
     maxBlock   = maximumBlockSize;
     numInCh    = juce::jlimit (0, 2, newNumInputChannels);
@@ -92,6 +98,14 @@ void AnalysisProcessor::prepare (double newSampleRate, int maximumBlockSize, int
     atomicRefPeakHoldDb.store (silenceFloorDb, std::memory_order_relaxed);
     atomicInPeakHoldDb[0].store (silenceFloorDb, std::memory_order_relaxed);
     atomicInPeakHoldDb[1].store (silenceFloorDb, std::memory_order_relaxed);
+    atomicElapsedSeconds.store (elapsedOffsetSeconds, std::memory_order_relaxed);
+}
+
+void AnalysisProcessor::resetSessionClock() noexcept
+{
+    elapsedOffsetSeconds = 0.0;
+    samplesProcessed     = 0;
+    samplesIntoInterval  = 0;
     atomicElapsedSeconds.store (0.0, std::memory_order_relaxed);
 }
 
@@ -238,7 +252,8 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
     samplesIntoInterval += samplesToUse;
 
     if (sampleRate > 0.0)
-        atomicElapsedSeconds.store ((double) samplesProcessed / sampleRate, std::memory_order_relaxed);
+        atomicElapsedSeconds.store (elapsedOffsetSeconds + (double) samplesProcessed / sampleRate,
+                                    std::memory_order_relaxed);
 
     //--------------------------------------------------------------------
     // Push a Measurement at each interval boundary.

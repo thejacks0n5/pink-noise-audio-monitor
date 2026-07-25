@@ -108,6 +108,16 @@ public:
         Measurement can carry dropoutFlag; sets StatusBits::dropoutActive. */
     void noteDropoutActive() noexcept;
 
+    /** MESSAGE THREAD, and only while the device callback is detached (i.e. from
+        AudioEngine::start()). Zeroes the session clock.
+
+        prepare() deliberately does NOT do this: it runs on every device restart,
+        and zeroing there made elapsedSeconds — and therefore the CSV's derived
+        timestamp_utc — jump backwards mid-session every time the device was
+        reconfigured. The clock now carries forward across restarts and only
+        resets on a genuine session start. */
+    void resetSessionClock() noexcept;
+
     //==========================================================================
     // Live meter values — atomics polled by the UI timer. dBFS.
 
@@ -152,6 +162,11 @@ private:
     int     maxBlock   { 0 };
     int     numInCh    { 0 };
     int64_t samplesProcessed        { 0 };
+
+    // Elapsed time accumulated by previous device configurations in this
+    // session. samplesProcessed counts only the current one, so that a
+    // sample-rate change converts correctly instead of warping the clock.
+    double  elapsedOffsetSeconds    { 0.0 };
     int64_t samplesIntoInterval     { 0 };
     // interval accumulators: sum of squares, running peaks, clip count, flags
     double  refSumSquares { 0.0 };

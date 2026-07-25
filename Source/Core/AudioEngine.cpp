@@ -73,6 +73,10 @@ bool AudioEngine::start()
     if (deviceManager.getCurrentAudioDevice() == nullptr)
         return false;
 
+    // A genuine session start — the only place the session clock goes back to
+    // zero. Safe here: the device callback is not attached yet.
+    analysisProcessor.resetSessionClock();
+
     samplesSinceStart = 0;
     previousGainLinear = 0.0f;
 
@@ -168,6 +172,12 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
 
 void AudioEngine::audioDeviceStopped()
 {
+    // A user-initiated reconfiguration stops and restarts the device. That is
+    // not a fault, and clearing `running` here would leave the session marked
+    // stopped even though audio resumes a moment later.
+    if (expectedDeviceChange.load (std::memory_order_relaxed))
+        return;
+
     running.store (false, std::memory_order_relaxed);
 
     Event ev {};

@@ -24,6 +24,7 @@ const char* toString (EventType type) noexcept
         case EventType::ManualMarker:    return "ManualMarker";
         case EventType::AudioDeviceLost: return "AudioDeviceLost";
         case EventType::LoggingError:    return "LoggingError";
+        case EventType::AudioSettingsChanged: return "AudioSettingsChanged";
         case EventType::Other:
         default:                         return "Other";
     }
