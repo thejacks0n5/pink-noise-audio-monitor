@@ -1,0 +1,35 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+
+# CMake FetchContent cache / generated files
+_deps/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# JUCE
+JuceLibraryCode/
+*.jucer.bak
