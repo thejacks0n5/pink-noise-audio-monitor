@@ -27,7 +27,8 @@ namespace CommandIDs
     enum
     {
         showPreferences = 0x2000,
-        showAudioDeviceSetup
+        showAudioDeviceSetup,
+        setLogFile
     };
 }
 
@@ -113,7 +114,7 @@ public:
     // juce::MenuBarModel
     juce::StringArray getMenuBarNames() override
     {
-        return { "Audio" };
+        return { "Audio", "Logging" };
     }
 
     juce::PopupMenu getMenuForIndex (int topLevelMenuIndex, const juce::String&) override
@@ -122,6 +123,8 @@ public:
 
         if (topLevelMenuIndex == 0)
             menu.addCommandItem (&commandManager, CommandIDs::showAudioDeviceSetup);
+        else if (topLevelMenuIndex == 1)
+            menu.addCommandItem (&commandManager, CommandIDs::setLogFile);
 
         return menu;
     }
@@ -138,6 +141,7 @@ public:
         JUCEApplication::getAllCommands (commands);
         commands.add (CommandIDs::showPreferences);
         commands.add (CommandIDs::showAudioDeviceSetup);
+        commands.add (CommandIDs::setLogFile);
     }
 
     void getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result) override
@@ -154,6 +158,13 @@ public:
                 result.setInfo ("Audio Device Setup...", "Choose the input and output devices",
                                 "General", 0);
                 result.addDefaultKeypress ('a', juce::ModifierKeys::commandModifier
+                                                  | juce::ModifierKeys::shiftModifier);
+                return;
+
+            case CommandIDs::setLogFile:
+                result.setInfo ("Set Log File...", "Name this log and choose where to save it",
+                                "General", 0);
+                result.addDefaultKeypress ('l', juce::ModifierKeys::commandModifier
                                                   | juce::ModifierKeys::shiftModifier);
                 return;
 
@@ -177,6 +188,11 @@ public:
             case CommandIDs::showAudioDeviceSetup:
                 if (content != nullptr)
                     content->openAudioDeviceSetup();
+                return true;
+
+            case CommandIDs::setLogFile:
+                if (content != nullptr)
+                    content->openLogFileSetup();
                 return true;
 
             default:

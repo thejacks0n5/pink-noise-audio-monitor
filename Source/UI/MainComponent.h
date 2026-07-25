@@ -135,6 +135,10 @@ public:
                                              // notification toggles, seed,
                                              // log base folder picker
 
+    /** Native chooser for the log name + folder. Logging cannot start until this
+        has been set once; Start Logging opens it automatically if it hasn't. */
+    void openLogFileSetup();
+
 private:
     //==========================================================================
     // juce::Timer — the single ~30 Hz message-thread pump (see header block)
@@ -206,6 +210,21 @@ private:
     /** Where session folders are created; persisted in appProperties.
         Default: ~/Documents/PinkNoiseAudioMonitor/. */
     juce::File getLogBaseFolder() const;
+
+    /** User-chosen label for this rig's logs; each session folder is named
+        "<baseName>_<timestamp>". Empty until the user picks one. */
+    juce::String getLogBaseName() const;
+
+    /** @returns true once a log name and folder have been chosen. */
+    bool isLogDestinationConfigured() const;
+
+    /** Opens the native chooser and invokes onChosen(true) if the user picked a
+        destination. Async — the chooser must outlive the call, hence the member
+        below. */
+    void chooseLogDestination (std::function<void (bool)> onChosen);
+
+    // Kept alive across the async FileChooser callback.
+    std::unique_ptr<juce::FileChooser> logFileChooser;
 
     //==========================================================================
     // 1. Theme (constructed first, destroyed last)

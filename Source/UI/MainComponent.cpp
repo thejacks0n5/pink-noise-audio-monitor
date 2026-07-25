@@ -551,6 +551,19 @@ void MainComponent::startLogging()
     if (! engine->isRunning())
         return;
 
+    // A log name + folder is required. If it has never been set, prompt for it
+    // and continue into logging once the user has chosen.
+    if (! isLogDestinationConfigured())
+    {
+        chooseLogDestination ([this] (bool chosen)
+        {
+            if (chosen)
+                startLogging();
+        });
+
+        return;
+    }
+
     currentSessionInfo = buildSessionInfo();
 
     if (sessionLogger.startSession (getLogBaseFolder(), currentSessionInfo))
@@ -974,7 +987,12 @@ SessionInfo MainComponent::buildSessionInfo() const
     // startTimeUtc is the audio-clock zero anchor so elapsedSeconds -> UTC
     // conversion in SessionLogger stays correct regardless of when logging
     // was started relative to audio start.
-    info.sessionId         = juce::Time::getCurrentTime().formatted ("%Y%m%d_%H%M%S");
+    // "<user's log name>_<timestamp>": carries the name the user chose while
+    // still keeping every run in its own folder.
+    const auto timestamp = juce::Time::getCurrentTime().formatted ("%Y%m%d_%H%M%S");
+    const auto baseName  = getLogBaseName();
+
+    info.sessionId         = baseName.isNotEmpty() ? baseName + "_" + timestamp : timestamp;
     info.startTimeUtc      = sessionStartUtc;
     info.sampleRate        = engine->getSampleRate();
     info.bufferSize        = engine->getBufferSize();
@@ -989,6 +1007,66 @@ SessionInfo MainComponent::buildSessionInfo() const
     info.outputLevelDb     = engine->getGenerator().getLevelDb();
 
     return info;
+}
+
+void MainComponent::openLogFileSetup()
+{
+    chooseLogDestination (nullptr);
+}
+
+juce::String MainComponent::getLogBaseName() const
+{
+    auto& props = const_cast<juce::ApplicationProperties&> (appProperties);
+    return props.getUserSettings()->getValue ("logBaseName", {});
+}
+
+bool MainComponent::isLogDestinationConfigured() const
+{
+    auto& props = const_cast<juce::ApplicationProperties&> (appProperties);
+
+    return getLogBaseName().isNotEmpty()
+        && props.getUserSettings()->getValue ("logBaseFolder", {}).isNotEmpty();
+}
+
+void MainComponent::chooseLogDestination (std::function<void (bool)> onChosen)
+{
+    const auto existingName = getLogBaseName();
+    const auto startIn = getLogBaseFolder().getChildFile (existingName.isNotEmpty() ? existingName
+                                                                                    : "PinkNoiseLog");
+
+    logFileChooser = std::make_unique<juce::FileChooser> (
+        "Name this log and choose where to save it", startIn, "*");
+
+    const auto flags = juce::FileBrowserComponent::saveMode
+                     | juce::FileBrowserComponent::canSelectFiles
+                     | juce::FileBrowserComponent::warnAboutOverwriting;
+
+    logFileChooser->launchAsync (flags, [this, onChosen] (const juce::FileChooser& chooser)
+    {
+        const auto result = chooser.getResult();
+
+        if (result == juce::File{})
+        {
+            if (onChosen != nullptr)
+                onChosen (false);
+
+            return;
+        }
+
+        // The name becomes the label on each session folder; the containing
+        // directory becomes the log root. Each Start Logging still gets its own
+        // "<name>_<timestamp>" folder so runs never overwrite each other.
+        auto* settings = appProperties.getUserSettings();
+        settings->setValue ("logBaseName",   result.getFileNameWithoutExtension());
+        settings->setValue ("logBaseFolder", result.getParentDirectory().getFullPathName());
+        settings->saveIfNeeded();
+
+        statusBar.setAppStatus ("Log: " + result.getFileNameWithoutExtension()
+                                  + " in " + result.getParentDirectory().getFileName());
+
+        if (onChosen != nullptr)
+            onChosen (true);
+    });
 }
 
 juce::File MainComponent::getLogBaseFolder() const
