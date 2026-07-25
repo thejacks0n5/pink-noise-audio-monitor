@@ -59,7 +59,11 @@ bool SessionLogger::startSession (const juce::File& baseFolder, const SessionInf
     auto measurementsFile = sessionFolder.getChildFile ("measurements.csv");
     auto eventsFile       = sessionFolder.getChildFile ("events.csv");
 
-    if (! measurementWriter.open (measurementsFile, getMeasurementCsvHeader()))
+    // Adopt the info before opening: the measurement header's per-channel
+    // columns are derived from its channel counts and names.
+    activeInfo = info;
+
+    if (! measurementWriter.open (measurementsFile, getMeasurementCsvHeader (activeInfo)))
     {
         reportErrorOnce ("Could not open measurements.csv for writing.");
         return false;
@@ -89,6 +93,18 @@ bool SessionLogger::startSession (const juce::File& baseFolder, const SessionInf
     text << "pinkNoiseSeed: "     << (juce::int64) activeInfo.pinkNoiseSeed << "\n";
     text << "outputLevelDb: "     << activeInfo.outputLevelDb << "\n";
     text << "logFolder: "         << activeInfo.logFolder.getFullPathName() << "\n";
+
+    for (int ch = 0; ch < juce::jlimit (0, maxChannels, activeInfo.numOutputChannels); ++ch)
+        text << "outputChannel" << (ch + 1) << ": " << channelName (activeInfo, ch, false) << "\n";
+
+    for (int ch = 0; ch < juce::jlimit (0, maxChannels, activeInfo.numInputChannels); ++ch)
+    {
+        const int refOut = juce::isPositiveAndBelow (ch, activeInfo.referenceOutputForInput.size())
+                             ? activeInfo.referenceOutputForInput[ch] : 0;
+
+        text << "inputChannel" << (ch + 1) << ": " << channelName (activeInfo, ch, true)
+             << " (referenced to " << channelName (activeInfo, refOut, false) << ")\n";
+    }
 
     infoFile.replaceWithText (text);
 
@@ -160,13 +176,29 @@ void SessionLogger::logMeasurement (const Measurement& m)
     row.add (formatSeconds (m.elapsedSeconds));
     row.add (juce::String (m.sampleRate, 1));
     row.add (juce::String (m.bufferSize));
-    row.add (formatDb (m.refPeakDb));
-    row.add (formatDb (m.refRmsDb));
-    row.add (formatDb (m.inPeakDbL));
-    row.add (formatDb (m.inPeakDbR));
-    row.add (formatDb (m.inRmsDbL));
-    row.add (formatDb (m.inRmsDbR));
-    row.add (formatDb (m.gainDiffDb));
+    // Per-channel columns, in the same order getMeasurementCsvHeader() emits
+    // them. The header is built from the session's channel counts, so iterate
+    // those — not the measurement's — or a mid-session device change would
+    // silently shift every column.
+    const int outs = juce::jlimit (0, maxChannels, activeInfo.numOutputChannels);
+    const int ins  = juce::jlimit (0, maxChannels, activeInfo.numInputChannels);
+
+    for (int ch = 0; ch < outs; ++ch)
+    {
+        const bool valid = ch < m.numOutputChannels;
+        row.add (valid ? formatDb (m.refPeakDb[ch]) : juce::String());
+        row.add (valid ? formatDb (m.refRmsDb[ch])  : juce::String());
+    }
+
+    for (int ch = 0; ch < ins; ++ch)
+    {
+        const bool valid = ch < m.numInputChannels;
+        row.add (valid ? formatDb (m.inPeakDb[ch])   : juce::String());
+        row.add (valid ? formatDb (m.inRmsDb[ch])    : juce::String());
+        row.add (valid ? formatDb (m.gainDiffDb[ch]) : juce::String());
+        row.add (valid ? juce::String (m.clipCountPerChannel[ch]) : juce::String());
+    }
+
     row.add (formatCorrelation (m.correlation));
     row.add (juce::String (m.dropoutFlag));
     row.add (juce::String (m.clipCountBlock));
@@ -197,7 +229,10 @@ void SessionLogger::logEvent (const Event& e, const juce::String& description)
     row.add (formatSeconds (e.elapsedSeconds));
     row.add (juce::String (toString (e.type)));
     row.add (juce::String (toString (e.severity)));
-    row.add (juce::String (toString (e.channel)));
+    // Prefer the user's channel name; fall back to the legacy L/R/Both label
+    // for events that aren't tied to one channel.
+    row.add (e.channelIndex >= 0 ? channelName (activeInfo, e.channelIndex, e.channelIsInput)
+                                 : juce::String (toString (e.channel)));
     row.add (juce::String (e.measuredValue, 3));
     row.add (juce::String (e.expectedValue, 3));
     row.add (juce::String (e.difference, 3));
@@ -274,12 +309,50 @@ juce::String SessionLogger::composeDescription (const Event& e)
 }
 
 //==============================================================================
-juce::StringArray SessionLogger::getMeasurementCsvHeader()
+juce::String SessionLogger::channelName (const SessionInfo& info, int channelIndex, bool isInput)
 {
-    return { "timestamp_utc", "elapsed_s", "sample_rate", "buffer_size",
-             "ref_peak_db", "ref_rms_db",
-             "in_peak_db_l", "in_peak_db_r", "in_rms_db_l", "in_rms_db_r",
-             "gain_diff_db", "correlation", "dropout_flag", "clip_count", "status_code" };
+    const auto& names = isInput ? info.inputChannelNames : info.outputChannelNames;
+
+    if (juce::isPositiveAndBelow (channelIndex, names.size()) && names[channelIndex].isNotEmpty())
+        return names[channelIndex];
+
+    return (isInput ? "In " : "Out ") + juce::String (channelIndex + 1);
+}
+
+juce::StringArray SessionLogger::getMeasurementCsvHeader (const SessionInfo& info)
+{
+    // Column names are sanitised so a channel called "Booth, Left" cannot break
+    // the CSV or collide with the delimiter.
+    const auto columnise = [] (juce::String name) -> juce::String
+    {
+        name = name.retainCharacters ("abcdefghijklmnopqrstuvwxyz"
+                                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-");
+        return name.trim().replaceCharacter (' ', '_').replaceCharacter ('-', '_').toLowerCase();
+    };
+
+    juce::StringArray header { "timestamp_utc", "elapsed_s", "sample_rate", "buffer_size" };
+
+    const int outs = juce::jlimit (0, maxChannels, info.numOutputChannels);
+    const int ins  = juce::jlimit (0, maxChannels, info.numInputChannels);
+
+    for (int ch = 0; ch < outs; ++ch)
+    {
+        const auto n = columnise (channelName (info, ch, false));
+        header.add (n + "_peak_db");
+        header.add (n + "_rms_db");
+    }
+
+    for (int ch = 0; ch < ins; ++ch)
+    {
+        const auto n = columnise (channelName (info, ch, true));
+        header.add (n + "_peak_db");
+        header.add (n + "_rms_db");
+        header.add (n + "_gain_diff_db");
+        header.add (n + "_clip_count");
+    }
+
+    header.addArray ({ "correlation", "dropout_flag", "clip_count", "status_code" });
+    return header;
 }
 
 juce::StringArray SessionLogger::getEventCsvHeader()

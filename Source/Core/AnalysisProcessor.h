@@ -45,13 +45,21 @@ struct BlockStats
     int     numSamples               { 0 };
     int     numInputChannels         { 0 };
 
-    float   refPeakDb  { silenceFloorDb };    ///< Reference block peak (post-gain).
-    float   refRmsDb   { silenceFloorDb };
-    float   inPeakDb[2]  { silenceFloorDb, silenceFloorDb };  ///< [0]=L, [1]=R (R mirrors L in mono).
-    float   inRmsDb[2]   { silenceFloorDb, silenceFloorDb };
+    int     numOutputChannels        { 0 };
 
-    float   gainDiffDb { 0.0f };              ///< max(inRmsDb) - refRmsDb.
+    float   refPeakDb[maxChannels] {};        ///< Per-output reference block peak (post-gain).
+    float   refRmsDb[maxChannels]  {};
+    float   inPeakDb[maxChannels]  {};        ///< Per-input block peak.
+    float   inRmsDb[maxChannels]   {};
+
+    /** Per-input: inRmsDb[i] - refRmsDb[reference output for input i]. */
+    float   gainDiffDb[maxChannels] {};
+
+    /** Which output each input was compared against, so the EventDetector can
+        quote the right reference level without needing the mapping itself. */
+    int32_t referenceOutputForInput[maxChannels] {};
     int32_t clipCount  { 0 };                 ///< Input samples at/above clip threshold, all channels.
+    int32_t clipCountPerChannel[maxChannels] {};  ///< Same, split per input channel.
     int32_t statusCode { StatusBits::ok };    ///< StatusBits snapshot (mute/fade/settling...).
 };
 
@@ -72,7 +80,8 @@ public:
     //==========================================================================
     /** NON-REAL-TIME, audio stopped. Resets accumulators, peak holds, and the
         session-relative sample clock to zero. */
-    void prepare (double sampleRate, int maximumBlockSize, int numInputChannels);
+    void prepare (double sampleRate, int maximumBlockSize, int numInputChannels,
+                  int numOutputChannels);
 
     /** Interval between Measurement pushes, seconds. Clamped to [0.1, 60].
         Default 1.0. Any thread (atomic; takes effect at the next boundary). */
@@ -121,24 +130,52 @@ public:
     //==========================================================================
     // Live meter values — atomics polled by the UI timer. dBFS.
 
-    float getRefPeakDb()  const noexcept { return atomicRefPeakDb.load (std::memory_order_relaxed); }
-    float getRefRmsDb()   const noexcept { return atomicRefRmsDb.load (std::memory_order_relaxed); }
+    /** All take a channel index clamped to [0, maxChannels). Output-side getters
+        index output channels; input-side getters index input channels. */
+    float getRefPeakDb (int channel = 0) const noexcept
+    {
+        return atomicRefPeakDb[clampChannel (channel)].load (std::memory_order_relaxed);
+    }
+    float getRefRmsDb (int channel = 0) const noexcept
+    {
+        return atomicRefRmsDb[clampChannel (channel)].load (std::memory_order_relaxed);
+    }
 
-    /** channel: 0 = L, 1 = R. Mono sessions mirror channel 0 into 1. */
     float getInPeakDb (int channel) const noexcept
     {
-        return atomicInPeakDb[juce::jlimit (0, 1, channel)].load (std::memory_order_relaxed);
+        return atomicInPeakDb[clampChannel (channel)].load (std::memory_order_relaxed);
     }
     float getInRmsDb (int channel) const noexcept
     {
-        return atomicInRmsDb[juce::jlimit (0, 1, channel)].load (std::memory_order_relaxed);
+        return atomicInRmsDb[clampChannel (channel)].load (std::memory_order_relaxed);
     }
 
     /** Held maxima since the last resetPeakHold(). */
-    float getRefPeakHoldDb() const noexcept { return atomicRefPeakHoldDb.load (std::memory_order_relaxed); }
+    float getRefPeakHoldDb (int channel = 0) const noexcept
+    {
+        return atomicRefPeakHoldDb[clampChannel (channel)].load (std::memory_order_relaxed);
+    }
     float getInPeakHoldDb (int channel) const noexcept
     {
-        return atomicInPeakHoldDb[juce::jlimit (0, 1, channel)].load (std::memory_order_relaxed);
+        return atomicInPeakHoldDb[clampChannel (channel)].load (std::memory_order_relaxed);
+    }
+
+    /** Live channel counts, as last prepared. */
+    int getNumInputChannels()  const noexcept { return numInCh; }
+    int getNumOutputChannels() const noexcept { return numOutCh; }
+
+    /** MESSAGE THREAD (audio stopped, or benign: a plain atomic store).
+        Chooses which output channel an input is compared against. Defaults to
+        the same index, clamped to the available outputs. */
+    void setReferenceOutputForInput (int inputChannel, int outputChannel) noexcept
+    {
+        referenceOutputForInput[clampChannel (inputChannel)]
+            .store (clampChannel (outputChannel), std::memory_order_relaxed);
+    }
+
+    int getReferenceOutputForInput (int inputChannel) const noexcept
+    {
+        return referenceOutputForInput[clampChannel (inputChannel)].load (std::memory_order_relaxed);
     }
 
     /** Any thread (UI button). Clears held peaks to silenceFloorDb. */
@@ -151,6 +188,8 @@ public:
 
 private:
     //==========================================================================
+    static int clampChannel (int ch) noexcept { return juce::jlimit (0, maxChannels - 1, ch); }
+
     MeasurementQueue& measurementQueue;
 
     // Config (atomic targets)
@@ -161,6 +200,7 @@ private:
     double  sampleRate { 0.0 };
     int     maxBlock   { 0 };
     int     numInCh    { 0 };
+    int     numOutCh   { 0 };
     int64_t samplesProcessed        { 0 };
 
     // Elapsed time accumulated by previous device configurations in this
@@ -169,21 +209,25 @@ private:
     double  elapsedOffsetSeconds    { 0.0 };
     int64_t samplesIntoInterval     { 0 };
     // interval accumulators: sum of squares, running peaks, clip count, flags
-    double  refSumSquares { 0.0 };
-    double  inSumSquares[2] { 0.0, 0.0 };
-    float   refIntervalPeak { 0.0f };
-    float   inIntervalPeak[2] { 0.0f, 0.0f };
+    double  refSumSquares[maxChannels] {};
+    double  inSumSquares[maxChannels] {};
+    float   refIntervalPeak[maxChannels] {};
+    float   inIntervalPeak[maxChannels] {};
     int32_t intervalClipCount { 0 };
+    int32_t intervalClipCountPerChannel[maxChannels] {};
     int32_t intervalStatusBits { StatusBits::ok };
     bool    intervalDropoutSeen { false };
 
     // Published live values
-    std::atomic<float>  atomicRefPeakDb { silenceFloorDb };
-    std::atomic<float>  atomicRefRmsDb  { silenceFloorDb };
-    std::atomic<float>  atomicInPeakDb[2];
-    std::atomic<float>  atomicInRmsDb[2];
-    std::atomic<float>  atomicRefPeakHoldDb { silenceFloorDb };
-    std::atomic<float>  atomicInPeakHoldDb[2];
+    std::atomic<float>  atomicRefPeakDb[maxChannels];
+    std::atomic<float>  atomicRefRmsDb[maxChannels];
+    std::atomic<float>  atomicInPeakDb[maxChannels];
+    std::atomic<float>  atomicInRmsDb[maxChannels];
+    std::atomic<float>  atomicRefPeakHoldDb[maxChannels];
+    std::atomic<float>  atomicInPeakHoldDb[maxChannels];
+
+    /** Which output each input is compared against (see setReferenceOutputForInput). */
+    std::atomic<int>    referenceOutputForInput[maxChannels];
     std::atomic<double> atomicElapsedSeconds { 0.0 };
 };
 

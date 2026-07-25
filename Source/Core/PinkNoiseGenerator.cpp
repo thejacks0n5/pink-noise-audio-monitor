@@ -41,10 +41,30 @@ void PinkNoiseGenerator::setSeed (uint64_t seed)
     prngState[0] = seedInUse;
 
     // Decorrelated stream for the second channel (IndependentStereo mode).
+    // Channels 0 and 1 keep their original derivation so streams logged by
+    // earlier mono/stereo sessions stay reproducible.
     uint64_t secondSeed = seedInUse ^ 0xBF58476D1CE4E5B9ULL;
     if (secondSeed == 0)
         secondSeed = 0xD1B54A32D192ED03ULL;
     prngState[1] = secondSeed;
+
+    // EVERY remaining channel needs its own non-zero state. xorshift64* seeded
+    // with 0 is stuck at 0 forever, and the pink filter turns that constant into
+    // a steady DC offset (~-4.7 dBFS at -20 dB level) rather than silence — so an
+    // unseeded channel looks like a loud, valid signal. splitmix64 gives each
+    // channel a well-distributed, deterministic, guaranteed non-zero seed.
+    uint64_t mix = seedInUse;
+
+    for (int ch = 2; ch < maxChannels; ++ch)
+    {
+        mix += 0x9E3779B97F4A7C15ULL;
+        uint64_t z = mix;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        z =  z ^ (z >> 31);
+
+        prngState[ch] = (z != 0) ? z : (0xD1B54A32D192ED03ULL + (uint64_t) ch + 1u);
+    }
 
     for (int ch = 0; ch < maxChannels; ++ch)
         kelletState[ch][0] = kelletState[ch][1] = kelletState[ch][2] = 0.0f;

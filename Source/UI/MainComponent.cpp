@@ -33,8 +33,8 @@ namespace
     public:
         explicit DeviceSetupPanel (juce::AudioDeviceManager& dm)
             : selector (dm,
-                        1, 2,      // input channel range  (min 1 => mono allowed)
-                        1, 2,      // output channel range (min 1 => mono allowed)
+                        1, maxChannels,   // input channel range  (min 1 => mono allowed)
+                        1, maxChannels,   // output channel range (min 1 => mono allowed)
                         false,     // no MIDI input selector
                         false,     // no MIDI output selector
                         false,     // show channels individually, NOT as stereo pairs
@@ -66,6 +66,118 @@ namespace
         juce::TextButton doneButton { "Done" };
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DeviceSetupPanel)
+    };
+
+    /** Channel naming + reference routing. One row per channel: an editor for
+        the name, and for inputs a combo choosing which output it is compared
+        against. Edits are pushed back through the callbacks as they happen. */
+    class ChannelSetupPanel : public juce::Component
+    {
+    public:
+        ChannelSetupPanel (juce::StringArray& outNames, juce::StringArray& inNames,
+                           juce::Array<int>& refs, std::function<void()> onChanged)
+            : outputNames (outNames), inputNames (inNames),
+              referenceForInput (refs), changed (std::move (onChanged))
+        {
+            addAndMakeVisible (heading);
+            heading.setText ("Name each channel. Names label the meters, the CSV columns and the event log.",
+                             juce::dontSendNotification);
+            heading.setJustificationType (juce::Justification::centredLeft);
+
+            buildRows();
+            setSize (560, juce::jlimit (220, 640, 84 + 30 * (outputNames.size() + inputNames.size() + 2)));
+        }
+
+        void resized() override
+        {
+            auto bounds = getLocalBounds().reduced (10);
+            heading.setBounds (bounds.removeFromTop (34));
+
+            for (auto* row : rows)
+            {
+                auto r = bounds.removeFromTop (26);
+                row->label->setBounds (r.removeFromLeft (90));
+                row->editor->setBounds (r.removeFromLeft (200).reduced (0, 2));
+
+                if (row->reference != nullptr)
+                {
+                    r.removeFromLeft (8);
+                    row->reference->setBounds (r.reduced (0, 2));
+                }
+
+                bounds.removeFromTop (4);
+            }
+        }
+
+    private:
+        struct Row
+        {
+            std::unique_ptr<juce::Label> label;
+            std::unique_ptr<juce::TextEditor> editor;
+            std::unique_ptr<juce::ComboBox> reference;   // inputs only
+        };
+
+        void buildRows()
+        {
+            const auto addRow = [this] (const juce::String& caption, juce::StringArray& names,
+                                        int index, bool isInput)
+            {
+                auto row = std::make_unique<Row>();
+
+                row->label = std::make_unique<juce::Label>();
+                row->label->setText (caption, juce::dontSendNotification);
+                addAndMakeVisible (*row->label);
+
+                row->editor = std::make_unique<juce::TextEditor>();
+                row->editor->setText (names[index], juce::dontSendNotification);
+                row->editor->onTextChange = [this, &names, index, ed = row->editor.get()]
+                {
+                    names.set (index, ed->getText());
+                    if (changed) changed();
+                };
+                addAndMakeVisible (*row->editor);
+
+                if (isInput)
+                {
+                    row->reference = std::make_unique<juce::ComboBox>();
+                    for (int o = 0; o < outputNames.size(); ++o)
+                        row->reference->addItem ("ref: " + outputNames[o], o + 1);
+
+                    const int current = juce::isPositiveAndBelow (index, referenceForInput.size())
+                                          ? referenceForInput[index] : 0;
+                    row->reference->setSelectedId (juce::jlimit (1, juce::jmax (1, outputNames.size()), current + 1),
+                                                   juce::dontSendNotification);
+
+                    row->reference->onChange = [this, index, cb = row->reference.get()]
+                    {
+                        while (referenceForInput.size() <= index)
+                            referenceForInput.add (0);
+
+                        referenceForInput.set (index, juce::jmax (0, cb->getSelectedId() - 1));
+                        if (changed) changed();
+                    };
+                    addAndMakeVisible (*row->reference);
+                }
+
+                rows.add (row.release());
+            };
+
+            for (int i = 0; i < outputNames.size(); ++i)
+                addRow ("Output " + juce::String (i + 1), outputNames, i, false);
+
+            for (int i = 0; i < inputNames.size(); ++i)
+                addRow ("Input " + juce::String (i + 1), inputNames, i, true);
+        }
+
+        juce::StringArray& outputNames;
+        juce::StringArray& inputNames;
+        juce::Array<int>&  referenceForInput;
+        std::function<void()> changed;
+
+        juce::Label heading;
+        juce::OwnedArray<Row> rows;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChannelSetupPanel)
     };
 
     /** Minimal modeless settings dialog content: EventDetector thresholds,
@@ -276,6 +388,9 @@ MainComponent::MainComponent()
         showStatusBarDeviceMenu (id, cellBounds);
     };
 
+    loadChannelConfig();
+    refreshChannelConfig();
+
     wireTransport();
     transport.setOutputLevelDb (PinkNoiseGenerator::defaultLevelDb);
 
@@ -298,6 +413,9 @@ MainComponent::~MainComponent()
 
     if (deviceSetupWindow != nullptr)
         deviceSetupWindow.deleteAndZero();
+
+    if (channelSetupWindow != nullptr)
+        channelSetupWindow.deleteAndZero();
 
     // Stops logging (if active) and the audio engine (fades out first).
     stopAudio();
@@ -730,6 +848,9 @@ void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* source)
 
     logAudioSettingsChange();
     saveDeviceState();
+
+    // Channel counts may have changed with the device.
+    refreshChannelConfig();
 }
 
 void MainComponent::logAudioSettingsChange()
@@ -849,8 +970,23 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
             const int activeChannels = juce::jmax (setup.inputChannels.countNumberOfSetBits(),
                                                    setup.outputChannels.countNumberOfSetBits());
 
+            // How many the hardware actually offers, so "All" is meaningful.
+            int deviceOuts = 0, deviceIns = 0;
+            if (auto* device = deviceManager.getCurrentAudioDevice())
+            {
+                deviceOuts = device->getOutputChannelNames().size();
+                deviceIns  = device->getInputChannelNames().size();
+            }
+
+            const int allCh = juce::jlimit (1, maxChannels, juce::jmax (deviceOuts, deviceIns));
+
             menu.addItem (1, "Mono (1 in / 1 out)",   true, activeChannels == 1);
-            menu.addItem (2, "Stereo (2 in / 2 out)", true, activeChannels >= 2);
+            menu.addItem (2, "Stereo (2 in / 2 out)", true, activeChannels == 2);
+
+            if (allCh > 2)
+                menu.addItem (3, "All (" + juce::String (deviceIns) + " in / "
+                                 + juce::String (deviceOuts) + " out)",
+                              true, activeChannels == allCh);
             break;
         }
 
@@ -941,11 +1077,24 @@ void MainComponent::showStatusBarDeviceMenu (TopStatusBar::CellId cellId,
 
             case TopStatusBar::CellId::channels:
             {
-                juce::BigInteger channels;
-                channels.setRange (0, result == 1 ? 1 : 2, true);
+                int wantOuts = result, wantIns = result;   // 1 = mono, 2 = stereo
 
-                newSetup.inputChannels             = channels;
-                newSetup.outputChannels            = channels;
+                if (result == 3)   // "All"
+                {
+                    wantOuts = wantIns = 2;
+                    if (auto* device = dm.getCurrentAudioDevice())
+                    {
+                        wantOuts = juce::jlimit (1, maxChannels, device->getOutputChannelNames().size());
+                        wantIns  = juce::jlimit (1, maxChannels, device->getInputChannelNames().size());
+                    }
+                }
+
+                juce::BigInteger outMask, inMask;
+                outMask.setRange (0, wantOuts, true);
+                inMask.setRange  (0, wantIns,  true);
+
+                newSetup.inputChannels             = inMask;
+                newSetup.outputChannels            = outMask;
                 newSetup.useDefaultInputChannels   = false;
                 newSetup.useDefaultOutputChannels  = false;
                 break;
@@ -996,13 +1145,30 @@ SessionInfo MainComponent::buildSessionInfo() const
     info.startTimeUtc      = sessionStartUtc;
     info.sampleRate        = engine->getSampleRate();
     info.bufferSize        = engine->getBufferSize();
-    info.numOutputChannels = engine->getNumOutputChannels();
-    info.numInputChannels  = engine->getNumInputChannels();
     // From the device manager, so session_info.txt records the distinct input
     // and output devices rather than one combined AudioIODevice name.
     const auto deviceSetup = engine->getDeviceManager().getAudioDeviceSetup();
     info.inputDeviceName   = deviceSetup.inputDeviceName;
     info.outputDeviceName  = deviceSetup.outputDeviceName;
+
+    // Channel identity travels with the session so the CSV columns, the events
+    // file and session_info.txt all speak the user's names.
+    int outs = 0, ins = 0;
+    getChannelCounts (outs, ins);
+
+    info.numOutputChannels = outs;
+    info.numInputChannels  = ins;
+
+    for (int ch = 0; ch < outs; ++ch)
+        info.outputChannelNames.add (ch < outputChannelNames.size() ? outputChannelNames[ch]
+                                                                     : "Out " + juce::String (ch + 1));
+
+    for (int ch = 0; ch < ins; ++ch)
+    {
+        info.inputChannelNames.add (ch < inputChannelNames.size() ? inputChannelNames[ch]
+                                                                   : "In " + juce::String (ch + 1));
+        info.referenceOutputForInput.add (ch < referenceOutputForInput.size() ? referenceOutputForInput[ch] : 0);
+    }
     info.pinkNoiseSeed     = engine->getGenerator().getSeed();
     info.outputLevelDb     = engine->getGenerator().getLevelDb();
 
@@ -1012,6 +1178,118 @@ SessionInfo MainComponent::buildSessionInfo() const
 void MainComponent::openLogFileSetup()
 {
     chooseLogDestination (nullptr);
+}
+
+void MainComponent::openChannelSetup()
+{
+    if (channelSetupWindow != nullptr)
+    {
+        channelSetupWindow->toFront (true);
+        return;
+    }
+
+    refreshChannelConfig();   // make sure the arrays match the current device
+
+    auto* content = new ChannelSetupPanel (outputChannelNames, inputChannelNames,
+                                           referenceOutputForInput,
+                                           [this]
+                                           {
+                                               saveChannelConfig();
+                                               refreshChannelConfig();
+                                           });
+
+    juce::DialogWindow::LaunchOptions launch;
+    launch.content.setOwned (content);
+    launch.dialogTitle = "Channel Names";
+    launch.dialogBackgroundColour = Palette::get (Palette::panelBackground);
+    launch.escapeKeyTriggersCloseButton = true;
+    launch.useNativeTitleBar = true;
+    launch.resizable = true;
+
+    channelSetupWindow = launch.launchAsync();
+}
+
+//==============================================================================
+void MainComponent::getChannelCounts (int& numOutputs, int& numInputs) const
+{
+    const auto setup = engine->getDeviceManager().getAudioDeviceSetup();
+
+    numOutputs = juce::jlimit (0, maxChannels, setup.outputChannels.countNumberOfSetBits());
+    numInputs  = juce::jlimit (0, maxChannels, setup.inputChannels.countNumberOfSetBits());
+
+    // Fall back to what the open device reports if the setup has no explicit mask.
+    if (auto* device = engine->getDeviceManager().getCurrentAudioDevice())
+    {
+        if (numOutputs == 0)
+            numOutputs = juce::jlimit (0, maxChannels, device->getActiveOutputChannels().countNumberOfSetBits());
+        if (numInputs == 0)
+            numInputs = juce::jlimit (0, maxChannels, device->getActiveInputChannels().countNumberOfSetBits());
+    }
+}
+
+void MainComponent::refreshChannelConfig()
+{
+    int outs = 0, ins = 0;
+    getChannelCounts (outs, ins);
+
+    // Preserve names the user already set; only fill in what is missing.
+    while (outputChannelNames.size() < outs)
+        outputChannelNames.add ("Out " + juce::String (outputChannelNames.size() + 1));
+
+    while (inputChannelNames.size() < ins)
+        inputChannelNames.add ("In " + juce::String (inputChannelNames.size() + 1));
+
+    while (referenceOutputForInput.size() < ins)
+        referenceOutputForInput.add (juce::jlimit (0, juce::jmax (0, outs - 1),
+                                                   referenceOutputForInput.size()));
+
+    // Clamp any stale mapping left over from a device with more outputs.
+    for (int i = 0; i < referenceOutputForInput.size(); ++i)
+        referenceOutputForInput.set (i, juce::jlimit (0, juce::jmax (0, outs - 1),
+                                                      referenceOutputForInput[i]));
+
+    for (int i = 0; i < ins; ++i)
+        engine->getAnalysis().setReferenceOutputForInput (i, referenceOutputForInput[i]);
+
+    refMeter.setNumChannels (juce::jmax (1, outs));
+    refMeter.setChannelNames (outputChannelNames);
+
+    inputMeter.setNumChannels (juce::jmax (1, ins));
+    inputMeter.setChannelNames (inputChannelNames);
+
+    waveform.setNumInputChannels (juce::jlimit (1, 2, ins));
+}
+
+void MainComponent::loadChannelConfig()
+{
+    auto* settings = appProperties.getUserSettings();
+
+    outputChannelNames.clear();
+    inputChannelNames.clear();
+    referenceOutputForInput.clear();
+
+    outputChannelNames.addTokens (settings->getValue ("outputChannelNames", {}), "\n", {});
+    inputChannelNames.addTokens  (settings->getValue ("inputChannelNames",  {}), "\n", {});
+
+    for (const auto& token : juce::StringArray::fromTokens (settings->getValue ("referenceOutputForInput", {}), ",", {}))
+        if (token.trim().isNotEmpty())
+            referenceOutputForInput.add (token.getIntValue());
+
+    outputChannelNames.removeEmptyStrings (false);
+    inputChannelNames.removeEmptyStrings (false);
+}
+
+void MainComponent::saveChannelConfig()
+{
+    juce::StringArray refs;
+    for (auto r : referenceOutputForInput)
+        refs.add (juce::String (r));
+
+    auto* settings = appProperties.getUserSettings();
+    settings->setValue ("outputChannelNames", outputChannelNames.joinIntoString ("\n"));
+    settings->setValue ("inputChannelNames",  inputChannelNames.joinIntoString ("\n"));
+    settings->setValue ("referenceOutputForInput", refs.joinIntoString (","));
+    settings->saveIfNeeded();
 }
 
 juce::String MainComponent::getLogBaseName() const

@@ -38,14 +38,18 @@ void EventDetector::prepare (double newSampleRate, int /*maximumBlockSize*/)
 {
     sampleRate = newSampleRate;
 
-    dropoutState     = ConditionState{};
-    clippingState     = ConditionState{};
-    levelChangeState = ConditionState{};
+    for (int ch = 0; ch < maxChannels; ++ch)
+    {
+        dropoutState[ch]     = ConditionState{};
+        clippingState[ch]    = ConditionState{};
+        levelChangeState[ch] = ConditionState{};
 
-    baselineGainDiffDb.store (std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
+        baselineGainDiffDb[ch].store (std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
+        baselineAccumSum[ch] = 0.0;
+    }
+
     baselineRecaptureRequested.store (true, std::memory_order_relaxed);
     baselineAccumSeconds = 0.0;
-    baselineAccumSum     = 0.0;
     baselineAccumBlocks  = 0;
 
     rateWindowStartSeconds = 0.0;
@@ -73,9 +77,10 @@ void EventDetector::recaptureBaseline() noexcept
     baselineRecaptureRequested.store (true, std::memory_order_relaxed);
 }
 
-float EventDetector::getBaselineGainDiffDb() const noexcept
+float EventDetector::getBaselineGainDiffDb (int inputChannel) const noexcept
 {
-    return baselineGainDiffDb.load (std::memory_order_relaxed);
+    return baselineGainDiffDb[juce::jlimit (0, maxChannels - 1, inputChannel)]
+             .load (std::memory_order_relaxed);
 }
 
 bool EventDetector::isDropoutActive() const noexcept
@@ -94,6 +99,9 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
     const Thresholds t = thresholdSlots[activeThresholdSlot.load (std::memory_order_acquire)];
 
     const double now = stats.blockStartElapsedSeconds;
+
+    // Every per-channel loop below is bounded by this.
+    const int numCh = juce::jlimit (0, maxChannels, stats.numInputChannels);
     const double blockSeconds = sampleRate > 0.0 ? (double) stats.numSamples / sampleRate : 0.0;
     const bool suppressed = isSuppressed (stats.statusCode);
 
@@ -127,16 +135,19 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
         if (! suppressed)
         {
             baselineAccumSeconds += blockSeconds;
-            baselineAccumSum     += stats.gainDiffDb;
+            for (int ch = 0; ch < numCh; ++ch)
+                baselineAccumSum[ch] += (double) stats.gainDiffDb[ch];
             ++baselineAccumBlocks;
 
             if (baselineAccumSeconds * 1000.0 >= t.baselineCaptureMs && baselineAccumBlocks > 0)
             {
-                const float captured = (float) (baselineAccumSum / (double) baselineAccumBlocks);
-                baselineGainDiffDb.store (captured, std::memory_order_relaxed);
+                for (int ch = 0; ch < numCh; ++ch)
+                    baselineGainDiffDb[ch].store ((float) (baselineAccumSum[ch] / (double) baselineAccumBlocks),
+                                                  std::memory_order_relaxed);
+
                 baselineRecaptureRequested.store (false, std::memory_order_relaxed);
                 baselineAccumSeconds = 0.0;
-                baselineAccumSum     = 0.0;
+                for (auto& sum : baselineAccumSum) sum = 0.0;
                 baselineAccumBlocks  = 0;
             }
         }
@@ -144,7 +155,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
         {
             // Reset the accumulation window if suppressed mid-capture.
             baselineAccumSeconds = 0.0;
-            baselineAccumSum     = 0.0;
+            for (auto& sum : baselineAccumSum) sum = 0.0;
             baselineAccumBlocks  = 0;
         }
     }
@@ -156,259 +167,288 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
     // state, which will now be false).
     if (suppressed)
     {
-        if (dropoutState.phase != ConditionState::Phase::inactive)
+        // Close out every channel's in-flight condition, so a suppression
+        // window never leaves a start event without its matching end.
+        for (int ch = 0; ch < numCh; ++ch)
         {
-            if (dropoutState.phase == ConditionState::Phase::active)
+            if (dropoutState[ch].phase != ConditionState::Phase::inactive)
             {
-                Event e;
-                e.type          = EventType::CompleteDropout;
-                e.severity      = Severity::Critical;
-                e.channel       = ChannelId::Both;
-                e.elapsedSeconds = now;
-                e.measuredValue = now - dropoutState.conditionStartSeconds;
-                e.expectedValue = 0.0;
-                e.difference    = e.measuredValue;
-                e.thresholdUsed = t.dropoutThresholdDb;
-                e.code          = eventCodeEnd;
-                tryPush (e);
-            }
-            dropoutState = ConditionState{};
-            dropoutActiveAtomic.store (false, std::memory_order_relaxed);
-        }
-
-        if (clippingState.phase != ConditionState::Phase::inactive)
-        {
-            if (clippingState.phase == ConditionState::Phase::active)
-            {
-                Event e;
-                e.type          = EventType::Clipping;
-                e.severity      = (now - clippingState.conditionStartSeconds) * 1000.0 >= t.criticalClipMs
-                                     ? Severity::Critical : Severity::Warning;
-                e.channel       = ChannelId::Both;
-                e.elapsedSeconds = now;
-                e.measuredValue = now - clippingState.conditionStartSeconds;
-                e.expectedValue = 0.0;
-                e.difference    = (double) clippingState.accumulatedCount;
-                e.thresholdUsed = t.clipThresholdLinear;
-                e.code          = eventCodeEnd;
-                tryPush (e);
-            }
-            clippingState = ConditionState{};
-            clippingActiveAtomic.store (false, std::memory_order_relaxed);
-        }
-
-        if (levelChangeState.phase != ConditionState::Phase::inactive)
-        {
-            if (levelChangeState.phase == ConditionState::Phase::active)
-            {
-                Event e;
-                e.type          = EventType::LevelChange;
-                e.severity      = Severity::Warning;
-                e.channel       = ChannelId::Both;
-                e.elapsedSeconds = now;
-                e.measuredValue = now - levelChangeState.conditionStartSeconds;
-                e.expectedValue = 0.0;
-                e.difference    = levelChangeState.worstValue;
-                e.thresholdUsed = t.levelChangeToleranceDb;
-                e.code          = eventCodeEnd;
-                tryPush (e);
-            }
-            levelChangeState = ConditionState{};
-        }
-
-        return false;
-    }
-
-    //--------------------------------------------------------------------
-    // Complete dropout: input RMS (max of L/R) far below the reference.
-    {
-        const float inRms = juce::jmax (stats.inRmsDb[0], stats.inRmsDb[1]);
-        const bool conditionNow = inRms <= t.dropoutThresholdDb;
-
-        if (conditionNow)
-        {
-            if (dropoutState.phase == ConditionState::Phase::inactive)
-            {
-                dropoutState.phase = ConditionState::Phase::pending;
-                dropoutState.phaseStartSeconds = now;
-                dropoutState.worstValue = inRms;
-            }
-            else if (dropoutState.phase == ConditionState::Phase::pending)
-            {
-                dropoutState.worstValue = juce::jmin (dropoutState.worstValue, (double) inRms);
-
-                if ((now - dropoutState.phaseStartSeconds) * 1000.0 >= t.minDropoutMs)
+                if (dropoutState[ch].phase == ConditionState::Phase::active)
                 {
-                    dropoutState.phase = ConditionState::Phase::active;
-                    dropoutState.conditionStartSeconds = dropoutState.phaseStartSeconds;
-
                     Event e;
                     e.type          = EventType::CompleteDropout;
                     e.severity      = Severity::Critical;
                     e.channel       = ChannelId::Both;
-                    e.elapsedSeconds = dropoutState.conditionStartSeconds;
-                    e.measuredValue = inRms;
-                    e.expectedValue = stats.refRmsDb;
-                    e.difference    = (double) inRms - (double) stats.refRmsDb;
+                    e.channelIndex  = ch;
+                    e.elapsedSeconds = now;
+                    e.measuredValue = now - dropoutState[ch].conditionStartSeconds;
+                    e.expectedValue = 0.0;
+                    e.difference    = e.measuredValue;
                     e.thresholdUsed = t.dropoutThresholdDb;
-                    e.code          = eventCodeStart;
+                    e.code          = eventCodeEnd;
                     tryPush (e);
                 }
+                dropoutState[ch] = ConditionState{};
             }
-            else // active
+
+            if (clippingState[ch].phase != ConditionState::Phase::inactive)
             {
-                dropoutState.worstValue = juce::jmin (dropoutState.worstValue, (double) inRms);
+                if (clippingState[ch].phase == ConditionState::Phase::active)
+                {
+                    Event e;
+                    e.type          = EventType::Clipping;
+                    e.severity      = (now - clippingState[ch].conditionStartSeconds) * 1000.0 >= t.criticalClipMs
+                                         ? Severity::Critical : Severity::Warning;
+                    e.channel       = ChannelId::Both;
+                    e.channelIndex  = ch;
+                    e.elapsedSeconds = now;
+                    e.measuredValue = now - clippingState[ch].conditionStartSeconds;
+                    e.expectedValue = 0.0;
+                    e.difference    = (double) clippingState[ch].accumulatedCount;
+                    e.thresholdUsed = t.clipThresholdLinear;
+                    e.code          = eventCodeEnd;
+                    tryPush (e);
+                }
+                clippingState[ch] = ConditionState{};
             }
-        }
-        else
-        {
-            if (dropoutState.phase == ConditionState::Phase::active)
+
+            if (levelChangeState[ch].phase != ConditionState::Phase::inactive)
             {
-                Event e;
-                e.type          = EventType::CompleteDropout;
-                e.severity      = Severity::Critical;
-                e.channel       = ChannelId::Both;
-                e.elapsedSeconds = now;
-                e.measuredValue = now - dropoutState.conditionStartSeconds;
-                e.expectedValue = 0.0;
-                e.difference    = e.measuredValue;
-                e.thresholdUsed = t.dropoutThresholdDb;
-                e.code          = eventCodeEnd;
-                tryPush (e);
+                if (levelChangeState[ch].phase == ConditionState::Phase::active)
+                {
+                    Event e;
+                    e.type          = EventType::LevelChange;
+                    e.severity      = Severity::Warning;
+                    e.channel       = ChannelId::Both;
+                    e.channelIndex  = ch;
+                    e.elapsedSeconds = now;
+                    e.measuredValue = now - levelChangeState[ch].conditionStartSeconds;
+                    e.expectedValue = 0.0;
+                    e.difference    = levelChangeState[ch].worstValue;
+                    e.thresholdUsed = t.levelChangeToleranceDb;
+                    e.code          = eventCodeEnd;
+                    tryPush (e);
+                }
+                levelChangeState[ch] = ConditionState{};
             }
-            dropoutState = ConditionState{};
+
         }
 
-        dropoutActiveAtomic.store (dropoutState.phase == ConditionState::Phase::active, std::memory_order_relaxed);
+        dropoutActiveAtomic.store (false, std::memory_order_relaxed);
+        clippingActiveAtomic.store (false, std::memory_order_relaxed);
+
+        return false;
     }
 
-    //--------------------------------------------------------------------
-    // Clipping: BlockStats::clipCount > 0 this block. A run ends after
-    // clipFreeMs with no clipped samples.
+    // Each condition runs independently per input channel, so a fault on one
+    // input is neither masked by nor duplicated onto another.
+    bool anyDropoutActive = false, anyClippingActive = false;
+
+    for (int ch = 0; ch < numCh; ++ch)
     {
-        const bool clippedThisBlock = stats.clipCount > 0;
+        const int refCh = juce::jlimit (0, juce::jmax (0, stats.numOutputChannels - 1),
+                                        stats.referenceOutputForInput[ch]);
 
-        if (clippedThisBlock)
+        //--------------------------------------------------------------------
+        // Complete dropout: input RMS (max of L/R) far below the reference.
         {
-            if (clippingState.phase == ConditionState::Phase::inactive)
-            {
-                clippingState.phase = ConditionState::Phase::active;
-                clippingState.phaseStartSeconds = now;
-                clippingState.conditionStartSeconds = now;
-                clippingState.accumulatedCount = 0;
-
-                Event e;
-                e.type          = EventType::Clipping;
-                e.severity      = Severity::Warning;
-                e.channel       = ChannelId::Both;
-                e.elapsedSeconds = now;
-                e.measuredValue = (double) stats.clipCount;
-                e.expectedValue = 0.0;
-                e.difference    = (double) stats.clipCount;
-                e.thresholdUsed = t.clipThresholdLinear;
-                e.code          = eventCodeStart;
-                tryPush (e);
-            }
-
-            clippingState.phaseStartSeconds = now; // last time clipping was observed
-            clippingState.accumulatedCount += stats.clipCount;
-        }
-        else if (clippingState.phase == ConditionState::Phase::active)
-        {
-            if ((now - clippingState.phaseStartSeconds) * 1000.0 >= t.clipFreeMs)
-            {
-                const double duration = now - clippingState.conditionStartSeconds;
-
-                Event e;
-                e.type          = EventType::Clipping;
-                e.severity      = duration * 1000.0 >= t.criticalClipMs ? Severity::Critical : Severity::Warning;
-                e.channel       = ChannelId::Both;
-                e.elapsedSeconds = now;
-                e.measuredValue = duration;
-                e.expectedValue = 0.0;
-                e.difference    = (double) clippingState.accumulatedCount;
-                e.thresholdUsed = t.clipThresholdLinear;
-                e.code          = eventCodeEnd;
-                tryPush (e);
-
-                clippingState = ConditionState{};
-            }
-        }
-
-        clippingActiveAtomic.store (clippingState.phase == ConditionState::Phase::active, std::memory_order_relaxed);
-    }
-
-    //--------------------------------------------------------------------
-    // Level change: sustained deviation of gainDiffDb from the captured
-    // baseline, beyond tolerance.
-    {
-        const float baseline = baselineGainDiffDb.load (std::memory_order_relaxed);
-
-        if (! std::isnan (baseline))
-        {
-            const double deviation = (double) stats.gainDiffDb - (double) baseline;
-            const bool conditionNow = std::abs (deviation) > (double) t.levelChangeToleranceDb;
+            const float inRms = stats.inRmsDb[ch];
+            const bool conditionNow = inRms <= t.dropoutThresholdDb;
 
             if (conditionNow)
             {
-                if (levelChangeState.phase == ConditionState::Phase::inactive)
+                if (dropoutState[ch].phase == ConditionState::Phase::inactive)
                 {
-                    levelChangeState.phase = ConditionState::Phase::pending;
-                    levelChangeState.phaseStartSeconds = now;
-                    levelChangeState.worstValue = deviation;
+                    dropoutState[ch].phase = ConditionState::Phase::pending;
+                    dropoutState[ch].phaseStartSeconds = now;
+                    dropoutState[ch].worstValue = inRms;
                 }
-                else if (levelChangeState.phase == ConditionState::Phase::pending)
+                else if (dropoutState[ch].phase == ConditionState::Phase::pending)
                 {
-                    if (std::abs (deviation) > std::abs (levelChangeState.worstValue))
-                        levelChangeState.worstValue = deviation;
+                    dropoutState[ch].worstValue = juce::jmin (dropoutState[ch].worstValue, (double) inRms);
 
-                    if ((now - levelChangeState.phaseStartSeconds) * 1000.0 >= t.levelChangeHoldMs)
+                    if ((now - dropoutState[ch].phaseStartSeconds) * 1000.0 >= t.minDropoutMs)
                     {
-                        levelChangeState.phase = ConditionState::Phase::active;
-                        levelChangeState.conditionStartSeconds = levelChangeState.phaseStartSeconds;
+                        dropoutState[ch].phase = ConditionState::Phase::active;
+                        dropoutState[ch].conditionStartSeconds = dropoutState[ch].phaseStartSeconds;
 
                         Event e;
-                        e.type          = EventType::LevelChange;
-                        e.severity      = Severity::Warning;
+                        e.type          = EventType::CompleteDropout;
+                        e.severity      = Severity::Critical;
                         e.channel       = ChannelId::Both;
-                        e.elapsedSeconds = levelChangeState.conditionStartSeconds;
-                        e.measuredValue = (double) stats.gainDiffDb;
-                        e.expectedValue = (double) baseline;
-                        e.difference    = deviation;
-                        e.thresholdUsed = t.levelChangeToleranceDb;
+                e.channelIndex  = ch;
+                        e.elapsedSeconds = dropoutState[ch].conditionStartSeconds;
+                        e.measuredValue = inRms;
+                        e.expectedValue = stats.refRmsDb[refCh];
+                        e.difference    = (double) inRms - (double) stats.refRmsDb[refCh];
+                        e.thresholdUsed = t.dropoutThresholdDb;
                         e.code          = eventCodeStart;
                         tryPush (e);
                     }
                 }
                 else // active
                 {
-                    if (std::abs (deviation) > std::abs (levelChangeState.worstValue))
-                        levelChangeState.worstValue = deviation;
+                    dropoutState[ch].worstValue = juce::jmin (dropoutState[ch].worstValue, (double) inRms);
                 }
             }
             else
             {
-                if (levelChangeState.phase == ConditionState::Phase::active)
+                if (dropoutState[ch].phase == ConditionState::Phase::active)
                 {
                     Event e;
-                    e.type          = EventType::LevelChange;
+                    e.type          = EventType::CompleteDropout;
+                    e.severity      = Severity::Critical;
+                    e.channel       = ChannelId::Both;
+                e.channelIndex  = ch;
+                    e.elapsedSeconds = now;
+                    e.measuredValue = now - dropoutState[ch].conditionStartSeconds;
+                    e.expectedValue = 0.0;
+                    e.difference    = e.measuredValue;
+                    e.thresholdUsed = t.dropoutThresholdDb;
+                    e.code          = eventCodeEnd;
+                    tryPush (e);
+                }
+                dropoutState[ch] = ConditionState{};
+            }
+
+            anyDropoutActive = anyDropoutActive || dropoutState[ch].phase == ConditionState::Phase::active;
+        }
+
+        //--------------------------------------------------------------------
+        // Clipping: BlockStats::clipCount > 0 this block. A run ends after
+        // clipFreeMs with no clipped samples.
+        {
+            const bool clippedThisBlock = stats.clipCountPerChannel[ch] > 0;
+
+            if (clippedThisBlock)
+            {
+                if (clippingState[ch].phase == ConditionState::Phase::inactive)
+                {
+                    clippingState[ch].phase = ConditionState::Phase::active;
+                    clippingState[ch].phaseStartSeconds = now;
+                    clippingState[ch].conditionStartSeconds = now;
+                    clippingState[ch].accumulatedCount = 0;
+
+                    Event e;
+                    e.type          = EventType::Clipping;
                     e.severity      = Severity::Warning;
                     e.channel       = ChannelId::Both;
+                e.channelIndex  = ch;
                     e.elapsedSeconds = now;
-                    e.measuredValue = now - levelChangeState.conditionStartSeconds;
+                    e.measuredValue = (double) stats.clipCountPerChannel[ch];
                     e.expectedValue = 0.0;
-                    e.difference    = levelChangeState.worstValue;
-                    e.thresholdUsed = t.levelChangeToleranceDb;
+                    e.difference    = (double) stats.clipCountPerChannel[ch];
+                    e.thresholdUsed = t.clipThresholdLinear;
+                    e.code          = eventCodeStart;
+                    tryPush (e);
+                }
+
+                clippingState[ch].phaseStartSeconds = now; // last time clipping was observed
+                clippingState[ch].accumulatedCount += stats.clipCount;
+            }
+            else if (clippingState[ch].phase == ConditionState::Phase::active)
+            {
+                if ((now - clippingState[ch].phaseStartSeconds) * 1000.0 >= t.clipFreeMs)
+                {
+                    const double duration = now - clippingState[ch].conditionStartSeconds;
+
+                    Event e;
+                    e.type          = EventType::Clipping;
+                    e.severity      = duration * 1000.0 >= t.criticalClipMs ? Severity::Critical : Severity::Warning;
+                    e.channel       = ChannelId::Both;
+                e.channelIndex  = ch;
+                    e.elapsedSeconds = now;
+                    e.measuredValue = duration;
+                    e.expectedValue = 0.0;
+                    e.difference    = (double) clippingState[ch].accumulatedCount;
+                    e.thresholdUsed = t.clipThresholdLinear;
                     e.code          = eventCodeEnd;
                     tryPush (e);
 
-                    // Re-arm the baseline to the new settled level.
-                    recaptureBaseline();
+                    clippingState[ch] = ConditionState{};
                 }
-                levelChangeState = ConditionState{};
+            }
+
+            anyClippingActive = anyClippingActive || clippingState[ch].phase == ConditionState::Phase::active;
+        }
+
+        //--------------------------------------------------------------------
+        // Level change: sustained deviation of gainDiffDb from the captured
+        // baseline, beyond tolerance.
+        {
+            const float baseline = baselineGainDiffDb[ch].load (std::memory_order_relaxed);
+
+            if (! std::isnan (baseline))
+            {
+                const double deviation = (double) stats.gainDiffDb[ch] - (double) baseline;
+                const bool conditionNow = std::abs (deviation) > (double) t.levelChangeToleranceDb;
+
+                if (conditionNow)
+                {
+                    if (levelChangeState[ch].phase == ConditionState::Phase::inactive)
+                    {
+                        levelChangeState[ch].phase = ConditionState::Phase::pending;
+                        levelChangeState[ch].phaseStartSeconds = now;
+                        levelChangeState[ch].worstValue = deviation;
+                    }
+                    else if (levelChangeState[ch].phase == ConditionState::Phase::pending)
+                    {
+                        if (std::abs (deviation) > std::abs (levelChangeState[ch].worstValue))
+                            levelChangeState[ch].worstValue = deviation;
+
+                        if ((now - levelChangeState[ch].phaseStartSeconds) * 1000.0 >= t.levelChangeHoldMs)
+                        {
+                            levelChangeState[ch].phase = ConditionState::Phase::active;
+                            levelChangeState[ch].conditionStartSeconds = levelChangeState[ch].phaseStartSeconds;
+
+                            Event e;
+                            e.type          = EventType::LevelChange;
+                            e.severity      = Severity::Warning;
+                            e.channel       = ChannelId::Both;
+                e.channelIndex  = ch;
+                            e.elapsedSeconds = levelChangeState[ch].conditionStartSeconds;
+                            e.measuredValue = (double) stats.gainDiffDb[ch];
+                            e.expectedValue = (double) baseline;
+                            e.difference    = deviation;
+                            e.thresholdUsed = t.levelChangeToleranceDb;
+                            e.code          = eventCodeStart;
+                            tryPush (e);
+                        }
+                    }
+                    else // active
+                    {
+                        if (std::abs (deviation) > std::abs (levelChangeState[ch].worstValue))
+                            levelChangeState[ch].worstValue = deviation;
+                    }
+                }
+                else
+                {
+                    if (levelChangeState[ch].phase == ConditionState::Phase::active)
+                    {
+                        Event e;
+                        e.type          = EventType::LevelChange;
+                        e.severity      = Severity::Warning;
+                        e.channel       = ChannelId::Both;
+                e.channelIndex  = ch;
+                        e.elapsedSeconds = now;
+                        e.measuredValue = now - levelChangeState[ch].conditionStartSeconds;
+                        e.expectedValue = 0.0;
+                        e.difference    = levelChangeState[ch].worstValue;
+                        e.thresholdUsed = t.levelChangeToleranceDb;
+                        e.code          = eventCodeEnd;
+                        tryPush (e);
+
+                        // Re-arm the baseline to the new settled level.
+                        recaptureBaseline();
+                    }
+                    levelChangeState[ch] = ConditionState{};
+                }
             }
         }
     }
+
+    dropoutActiveAtomic.store (anyDropoutActive, std::memory_order_relaxed);
+    clippingActiveAtomic.store (anyClippingActive, std::memory_order_relaxed);
 
     return dropoutActiveAtomic.load (std::memory_order_relaxed);
 }

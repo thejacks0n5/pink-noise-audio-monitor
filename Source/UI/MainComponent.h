@@ -139,6 +139,11 @@ public:
         has been set once; Start Logging opens it automatically if it hasn't. */
     void openLogFileSetup();
 
+    /** Dialog for naming every input/output channel and choosing which output
+        each input is referenced against. Names label the meters, the CSV
+        columns and the events file. */
+    void openChannelSetup();
+
 private:
     //==========================================================================
     // juce::Timer — the single ~30 Hz message-thread pump (see header block)
@@ -196,6 +201,26 @@ private:
 
     /** Last setup we reported on, so changes can be described as before → after. */
     juce::AudioDeviceManager::AudioDeviceSetup lastKnownSetup;
+
+    //==========================================================================
+    // Per-channel configuration (message thread)
+
+    /** Live channel counts from the device manager, clamped to maxChannels. */
+    void getChannelCounts (int& numOutputs, int& numInputs) const;
+
+    /** Grows/shrinks the name and reference arrays to the current channel count,
+        filling gaps with "Out n" / "In n" and identity reference mapping, then
+        pushes counts/names into the meters and the mapping into the engine.
+        Cheap and idempotent — called whenever the device configuration changes. */
+    void refreshChannelConfig();
+
+    void loadChannelConfig();
+    void saveChannelConfig();
+
+    juce::StringArray outputChannelNames, inputChannelNames;
+    juce::Array<int>  referenceOutputForInput;
+
+    juce::Component::SafePointer<juce::DialogWindow> channelSetupWindow;
 
     /** Drops a PopupMenu under a clicked TopStatusBar cell letting the user
         change output/input device, channel mode, sample rate or buffer size in

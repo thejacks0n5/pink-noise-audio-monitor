@@ -153,14 +153,16 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
     const int inCh  = juce::jmax (1, numInNow);
 
     generator.prepare (sampleRateNow, bufferSizeNow);
-    generator.setStereoMode (outCh >= 2 ? PinkNoiseGenerator::StereoMode::IndependentStereo
-                                        : PinkNoiseGenerator::StereoMode::LinkedMono);
+    // Always independent: every output carries its own uniquely seeded stream
+    // (seed, seed+1, ...), which is what lets an input be traced back to the
+    // specific output feeding it and makes a swapped patch cable detectable.
+    generator.setStereoMode (PinkNoiseGenerator::StereoMode::IndependentStereo);
 
     referenceHistory.prepare (outCh, (int) (sampleRateNow * 2.0));
     inputHistory.prepare (inCh, (int) (sampleRateNow * 2.0));
     generator.setReferenceHistory (&referenceHistory);
 
-    analysisProcessor.prepare (sampleRateNow, bufferSizeNow, inCh);
+    analysisProcessor.prepare (sampleRateNow, bufferSizeNow, inCh, outCh);
     eventDetector.prepare (sampleRateNow, bufferSizeNow);
 
     samplesSinceStart = 0;

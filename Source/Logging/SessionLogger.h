@@ -116,8 +116,15 @@ public:
     static juce::String composeDescription (const Event& e);
 
     /** Fixed CSV headers (exact contract; see file comment). */
-    static juce::StringArray getMeasurementCsvHeader();
+    /** Column layout depends on the session's channel count and names, so the
+        header is derived from the SessionInfo rather than being fixed. Per-channel
+        columns are emitted as "<name>_peak_db", "<name>_rms_db" (and
+        "<name>_gain_diff_db" for inputs), outputs first, then inputs. */
+    static juce::StringArray getMeasurementCsvHeader (const SessionInfo&);
     static juce::StringArray getEventCsvHeader();
+
+    /** Safe channel-name lookup with an "Out n"/"In n" fallback. */
+    static juce::String channelName (const SessionInfo&, int channelIndex, bool isInput);
 
     //==========================================================================
     /** Invoked (on the message thread) when a CSV write/flush fails after

@@ -28,7 +28,8 @@ namespace CommandIDs
     {
         showPreferences = 0x2000,
         showAudioDeviceSetup,
-        setLogFile
+        setLogFile,
+        showChannelSetup
     };
 }
 
@@ -122,7 +123,10 @@ public:
         juce::PopupMenu menu;
 
         if (topLevelMenuIndex == 0)
+        {
             menu.addCommandItem (&commandManager, CommandIDs::showAudioDeviceSetup);
+            menu.addCommandItem (&commandManager, CommandIDs::showChannelSetup);
+        }
         else if (topLevelMenuIndex == 1)
             menu.addCommandItem (&commandManager, CommandIDs::setLogFile);
 
@@ -142,6 +146,7 @@ public:
         commands.add (CommandIDs::showPreferences);
         commands.add (CommandIDs::showAudioDeviceSetup);
         commands.add (CommandIDs::setLogFile);
+        commands.add (CommandIDs::showChannelSetup);
     }
 
     void getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result) override
@@ -165,6 +170,13 @@ public:
                 result.setInfo ("Set Log File...", "Name this log and choose where to save it",
                                 "General", 0);
                 result.addDefaultKeypress ('l', juce::ModifierKeys::commandModifier
+                                                  | juce::ModifierKeys::shiftModifier);
+                return;
+
+            case CommandIDs::showChannelSetup:
+                result.setInfo ("Channel Names...", "Name each input/output and set its reference",
+                                "General", 0);
+                result.addDefaultKeypress ('k', juce::ModifierKeys::commandModifier
                                                   | juce::ModifierKeys::shiftModifier);
                 return;
 
@@ -193,6 +205,11 @@ public:
             case CommandIDs::setLogFile:
                 if (content != nullptr)
                     content->openLogFileSetup();
+                return true;
+
+            case CommandIDs::showChannelSetup:
+                if (content != nullptr)
+                    content->openChannelSetup();
                 return true;
 
             default:

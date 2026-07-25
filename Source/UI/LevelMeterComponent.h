@@ -73,10 +73,14 @@ public:
         detach, e.g. while the audio engine is being rebuilt). Not owned. */
     void setSource (AnalysisProcessor* source) noexcept;
 
-    /** Number of channel bars to draw: 1 (mono) or 2 (L/R). For Role::input
-        this must match the session's input channel count; Role::reference
-        always draws 1 bar regardless. */
+    /** Number of channel bars to draw, 1..maxChannels. Role::reference now
+        draws one bar per OUTPUT channel (each output carries its own
+        independently seeded stream), Role::input one bar per input channel. */
     void setNumChannels (int numChannels);
+
+    /** Per-bar captions drawn under each bar. Extra entries are ignored;
+        missing ones fall back to the channel number. */
+    void setChannelNames (const juce::StringArray& names);
     int  getNumChannels() const noexcept                     { return numChannels; }
 
     //==========================================================================
@@ -149,10 +153,11 @@ private:
     bool  readoutVisible = true;
 
     // Displayed (ballistic) values, dBFS, per channel [0]=L/mono [1]=R
-    float shownPeakDb[2]   { -120.0f, -120.0f };
-    float shownRmsDb[2]    { -120.0f, -120.0f };
-    float shownHoldDb[2]   { -120.0f, -120.0f };
-    bool  clipLit[2]       { false, false };
+    float shownPeakDb[maxChannels];
+    float shownRmsDb[maxChannels];
+    float shownHoldDb[maxChannels];
+    bool  clipLit[maxChannels] {};
+    juce::StringArray channelNames;
     juce::int64 lastRefreshMs = 0;           // for release ballistics
 
     juce::Rectangle<int> barArea, readoutArea, clipArea, titleArea;

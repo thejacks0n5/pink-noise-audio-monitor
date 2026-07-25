@@ -19,7 +19,11 @@ namespace
 LevelMeterComponent::LevelMeterComponent (Role roleIn, const juce::String& titleIn)
     : role (roleIn), title (titleIn)
 {
-    numChannels = (role == Role::reference) ? 1 : 2;
+    numChannels = 1;
+
+    for (int ch = 0; ch < maxChannels; ++ch)
+        shownPeakDb[ch] = shownRmsDb[ch] = shownHoldDb[ch] = silenceFloorDb;
+
     setInterceptsMouseClicks (true, false);
 }
 
@@ -31,12 +35,20 @@ void LevelMeterComponent::setSource (AnalysisProcessor* source) noexcept
     analysis = source;
 }
 
+void LevelMeterComponent::setChannelNames (const juce::StringArray& names)
+{
+    if (channelNames != names)
+    {
+        channelNames = names;
+        repaint();
+    }
+}
+
 void LevelMeterComponent::setNumChannels (int newNumChannels)
 {
-    if (role == Role::reference)
-        newNumChannels = 1;
-
-    newNumChannels = juce::jlimit (1, 2, newNumChannels);
+    // Both roles are now per-channel: the reference side draws one bar per
+    // output, since every output carries its own independent stream.
+    newNumChannels = juce::jlimit (1, maxChannels, newNumChannels);
 
     if (numChannels != newNumChannels)
     {
@@ -60,29 +72,29 @@ void LevelMeterComponent::refresh()
 
     const float releaseStep = defaultReleaseDbPerSecond * dtSeconds;
 
-    float peakDb[2]     { silenceFloorDb, silenceFloorDb };
-    float rmsDb[2]      { silenceFloorDb, silenceFloorDb };
-    float holdDb[2]     { silenceFloorDb, silenceFloorDb };
+    float peakDb[maxChannels], rmsDb[maxChannels], holdDb[maxChannels];
 
-    if (role == Role::reference)
+    const int bars = juce::jlimit (1, maxChannels, numChannels);
+
+    for (int ch = 0; ch < bars; ++ch)
     {
-        peakDb[0] = peakDb[1] = analysis->getRefPeakDb();
-        rmsDb[0]  = rmsDb[1]  = analysis->getRefRmsDb();
-        holdDb[0] = holdDb[1] = analysis->getRefPeakHoldDb();
-    }
-    else
-    {
-        peakDb[0] = analysis->getInPeakDb (0);
-        peakDb[1] = analysis->getInPeakDb (1);
-        rmsDb[0]  = analysis->getInRmsDb (0);
-        rmsDb[1]  = analysis->getInRmsDb (1);
-        holdDb[0] = analysis->getInPeakHoldDb (0);
-        holdDb[1] = analysis->getInPeakHoldDb (1);
+        if (role == Role::reference)
+        {
+            peakDb[ch] = analysis->getRefPeakDb (ch);
+            rmsDb[ch]  = analysis->getRefRmsDb (ch);
+            holdDb[ch] = analysis->getRefPeakHoldDb (ch);
+        }
+        else
+        {
+            peakDb[ch] = analysis->getInPeakDb (ch);
+            rmsDb[ch]  = analysis->getInRmsDb (ch);
+            holdDb[ch] = analysis->getInPeakHoldDb (ch);
+        }
     }
 
     bool changed = false;
 
-    for (int ch = 0; ch < 2; ++ch)
+    for (int ch = 0; ch < bars; ++ch)
     {
         const float prevPeak = shownPeakDb[ch];
         const float prevRms  = shownRmsDb[ch];
@@ -223,6 +235,21 @@ void LevelMeterComponent::paint (juce::Graphics& g)
                 juce::Rectangle<int> litRect (bar.getX(), bar.getBottom() - litHeight, bar.getWidth(), litHeight);
                 g.setColour (Palette::meterColourForDb (shownPeakDb[ch]));
                 g.fillRect (litRect);
+            }
+
+            // Per-bar caption, so a wall of bars is still readable.
+            if (bar.getWidth() >= 14)
+            {
+                const auto label = juce::isPositiveAndBelow (ch, channelNames.size())
+                                     && channelNames[ch].isNotEmpty()
+                                       ? channelNames[ch]
+                                       : juce::String (ch + 1);
+
+                g.setColour (Palette::get (Palette::textSecondary));
+                g.setFont (juce::Font (juce::FontOptions (8.5f)));
+                g.drawFittedText (label,
+                                  bar.getX() - 1, bar.getBottom() + 1, bar.getWidth() + 2, 10,
+                                  juce::Justification::centred, 1);
             }
 
             // RMS translucent overlay

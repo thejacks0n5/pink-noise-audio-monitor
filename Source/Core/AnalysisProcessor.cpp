@@ -64,7 +64,8 @@ AnalysisProcessor::AnalysisProcessor (MeasurementQueue& queueToFill)
 }
 
 //==============================================================================
-void AnalysisProcessor::prepare (double newSampleRate, int maximumBlockSize, int newNumInputChannels)
+void AnalysisProcessor::prepare (double newSampleRate, int maximumBlockSize, int newNumInputChannels,
+                                 int newNumOutputChannels)
 {
     // Fold whatever the previous device configuration accumulated into the
     // session offset BEFORE adopting the new sample rate, so the clock keeps
@@ -74,30 +75,36 @@ void AnalysisProcessor::prepare (double newSampleRate, int maximumBlockSize, int
 
     sampleRate = newSampleRate;
     maxBlock   = maximumBlockSize;
-    numInCh    = juce::jlimit (0, 2, newNumInputChannels);
+    numInCh    = juce::jlimit (0, maxChannels, newNumInputChannels);
+    numOutCh   = juce::jlimit (0, maxChannels, newNumOutputChannels);
 
     samplesProcessed    = 0;
     samplesIntoInterval = 0;
 
-    refSumSquares       = 0.0;
-    inSumSquares[0]      = 0.0;
-    inSumSquares[1]      = 0.0;
-    refIntervalPeak      = 0.0f;
-    inIntervalPeak[0]    = 0.0f;
-    inIntervalPeak[1]    = 0.0f;
+    for (int ch = 0; ch < maxChannels; ++ch)
+    {
+        refSumSquares[ch]   = 0.0;
+        inSumSquares[ch]    = 0.0;
+        refIntervalPeak[ch] = 0.0f;
+        inIntervalPeak[ch]  = 0.0f;
+        intervalClipCountPerChannel[ch] = 0;
+
+        atomicRefPeakDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicRefRmsDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicInPeakDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicInRmsDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicRefPeakHoldDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicInPeakHoldDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+
+        // Default pairing: input n references output n, clamped to what exists.
+        referenceOutputForInput[ch].store (juce::jlimit (0, juce::jmax (0, numOutCh - 1), ch),
+                                           std::memory_order_relaxed);
+    }
+
     intervalClipCount    = 0;
     intervalStatusBits   = StatusBits::ok;
     intervalDropoutSeen  = false;
 
-    atomicRefPeakDb.store (silenceFloorDb, std::memory_order_relaxed);
-    atomicRefRmsDb.store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakDb[0].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakDb[1].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInRmsDb[0].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInRmsDb[1].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicRefPeakHoldDb.store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakHoldDb[0].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakHoldDb[1].store (silenceFloorDb, std::memory_order_relaxed);
     atomicElapsedSeconds.store (elapsedOffsetSeconds, std::memory_order_relaxed);
 }
 
@@ -138,56 +145,53 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
 
     const int samplesToUse = juce::jlimit (0, maxAnalysedBlockSamples, juce::jmin (numSamples, maxBlock > 0 ? maxBlock : numSamples));
 
-    // Fixed-size scratch for the reference read-back — static storage so no
-    // large stack frame or heap allocation happens on every callback.
-    static thread_local float refScratchL[maxAnalysedBlockSamples];
-    static thread_local float refScratchR[maxAnalysedBlockSamples];
+    // One fixed-size scratch buffer, reused per channel — a per-channel array
+    // would be 64x larger for no benefit. Static storage keeps the audio-thread
+    // stack frame small and allocation-free.
+    static thread_local float refScratch[maxAnalysedBlockSamples];
 
     //--------------------------------------------------------------------
-    // Reference: read the newest samples just written this callback.
-    const int refChannels = juce::jmax (1, reference.getNumChannels());
+    // Reference: one independent stream per output channel.
+    const int refChannels = juce::jlimit (1, maxChannels,
+                                          juce::jmax (1, reference.getNumChannels()));
+    stats.numOutputChannels = refChannels;
 
-    reference.readLatest (refScratchL, 0, samplesToUse, 0);
-    float refPeakL = 0.0f;
-    double refSumSquaresL = 0.0;
-    analyseChannel (refScratchL, samplesToUse, refPeakL, refSumSquaresL);
+    float  refPeakLinearBlock[maxChannels] {};
+    double refSumSquaresBlock[maxChannels] {};
 
-    float   blockRefPeakLinear = refPeakL;
-    double  blockRefSumSquares = refSumSquaresL;
-
-    if (refChannels > 1)
+    for (int ch = 0; ch < refChannels; ++ch)
     {
-        reference.readLatest (refScratchR, 1, samplesToUse, 0);
-        float refPeakR = 0.0f;
-        double refSumSquaresR = 0.0;
-        analyseChannel (refScratchR, samplesToUse, refPeakR, refSumSquaresR);
+        reference.readLatest (refScratch, ch, samplesToUse, 0);
 
-        blockRefPeakLinear = juce::jmax (blockRefPeakLinear, refPeakR);
-        blockRefSumSquares += refSumSquaresR;
+        float peak = 0.0f;
+        double sumSquares = 0.0;
+        analyseChannel (refScratch, samplesToUse, peak, sumSquares);
+
+        refPeakLinearBlock[ch] = peak;
+        refSumSquaresBlock[ch] = sumSquares;
+
+        const float peakDb = linearToDb (peak);
+        const float rmsDb  = linearToDb ((float) std::sqrt (sumSquares / (double) juce::jmax (1, samplesToUse)));
+
+        stats.refPeakDb[ch] = peakDb;
+        stats.refRmsDb[ch]  = rmsDb;
+
+        atomicRefPeakDb[ch].store (peakDb, std::memory_order_relaxed);
+        atomicRefRmsDb[ch].store (rmsDb, std::memory_order_relaxed);
+
+        if (peakDb > atomicRefPeakHoldDb[ch].load (std::memory_order_relaxed))
+            atomicRefPeakHoldDb[ch].store (peakDb, std::memory_order_relaxed);
     }
 
-    const float refPeakDbBlock = linearToDb (blockRefPeakLinear);
-    const float refRmsDbBlock  = linearToDb ((float) std::sqrt (blockRefSumSquares
-                                              / (double) juce::jmax (1, samplesToUse * refChannels)));
-
-    stats.refPeakDb = refPeakDbBlock;
-    stats.refRmsDb  = refRmsDbBlock;
-
-    atomicRefPeakDb.store (refPeakDbBlock, std::memory_order_relaxed);
-    atomicRefRmsDb.store (refRmsDbBlock, std::memory_order_relaxed);
-
-    if (refPeakDbBlock > atomicRefPeakHoldDb.load (std::memory_order_relaxed))
-        atomicRefPeakHoldDb.store (refPeakDbBlock, std::memory_order_relaxed);
-
     //--------------------------------------------------------------------
-    // Input channels: [0]=L, [1]=R (mono mirrors L into R).
+    // Input channels.
     const float clipThreshold = clipThresholdLinear.load (std::memory_order_relaxed);
     int32_t blockClipCount = 0;
 
-    float  inPeakLinear[2] { 0.0f, 0.0f };
-    double inSumSquaresBlock[2] { 0.0, 0.0 };
+    float  inPeakLinear[maxChannels] {};
+    double inSumSquaresBlock[maxChannels] {};
 
-    const int channelsToAnalyse = juce::jlimit (0, 2, numInputChannelsThisBlock);
+    const int channelsToAnalyse = juce::jlimit (0, maxChannels, numInputChannelsThisBlock);
 
     for (int ch = 0; ch < channelsToAnalyse; ++ch)
     {
@@ -202,49 +206,54 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
         inPeakLinear[ch] = peak;
         inSumSquaresBlock[ch] = sumSquares;
 
+        int32_t channelClips = 0;
         for (int i = 0; i < samplesToUse; ++i)
             if (std::abs (data[i]) >= clipThreshold)
-                ++blockClipCount;
+                ++channelClips;
+
+        stats.clipCountPerChannel[ch] = channelClips;
+        blockClipCount += channelClips;
     }
 
-    if (channelsToAnalyse == 1)
+    for (int ch = 0; ch < channelsToAnalyse; ++ch)
     {
-        // Mono: mirror channel 0 into channel 1.
-        inPeakLinear[1] = inPeakLinear[0];
-        inSumSquaresBlock[1] = inSumSquaresBlock[0];
+        const float peakDb = linearToDb (inPeakLinear[ch]);
+        const float rmsDb  = linearToDb ((float) std::sqrt (inSumSquaresBlock[ch]
+                                          / (double) juce::jmax (1, samplesToUse)));
+
+        stats.inPeakDb[ch] = peakDb;
+        stats.inRmsDb[ch]  = rmsDb;
+
+        // Compare against whichever output this input is referenced to.
+        const int refCh = juce::jlimit (0, refChannels - 1,
+                                        referenceOutputForInput[ch].load (std::memory_order_relaxed));
+        stats.gainDiffDb[ch] = rmsDb - stats.refRmsDb[refCh];
+        stats.referenceOutputForInput[ch] = refCh;
+
+        atomicInPeakDb[ch].store (peakDb, std::memory_order_relaxed);
+        atomicInRmsDb[ch].store (rmsDb, std::memory_order_relaxed);
+
+        if (peakDb > atomicInPeakHoldDb[ch].load (std::memory_order_relaxed))
+            atomicInPeakHoldDb[ch].store (peakDb, std::memory_order_relaxed);
     }
 
-    const float inPeakDbBlock[2] = { linearToDb (inPeakLinear[0]), linearToDb (inPeakLinear[1]) };
-    const float inRmsDbBlock[2]  =
-    {
-        linearToDb ((float) std::sqrt (inSumSquaresBlock[0] / (double) juce::jmax (1, samplesToUse))),
-        linearToDb ((float) std::sqrt (inSumSquaresBlock[1] / (double) juce::jmax (1, samplesToUse)))
-    };
-
-    stats.inPeakDb[0] = inPeakDbBlock[0];
-    stats.inPeakDb[1] = inPeakDbBlock[1];
-    stats.inRmsDb[0]  = inRmsDbBlock[0];
-    stats.inRmsDb[1]  = inRmsDbBlock[1];
-    stats.clipCount   = blockClipCount;
-    stats.gainDiffDb  = juce::jmax (inRmsDbBlock[0], inRmsDbBlock[1]) - refRmsDbBlock;
-
-    for (int ch = 0; ch < 2; ++ch)
-    {
-        atomicInPeakDb[ch].store (inPeakDbBlock[ch], std::memory_order_relaxed);
-        atomicInRmsDb[ch].store (inRmsDbBlock[ch], std::memory_order_relaxed);
-
-        if (inPeakDbBlock[ch] > atomicInPeakHoldDb[ch].load (std::memory_order_relaxed))
-            atomicInPeakHoldDb[ch].store (inPeakDbBlock[ch], std::memory_order_relaxed);
-    }
+    stats.clipCount = blockClipCount;
 
     //--------------------------------------------------------------------
     // Interval accumulation for the next Measurement push.
-    refSumSquares          += blockRefSumSquares;
-    inSumSquares[0]         += inSumSquaresBlock[0];
-    inSumSquares[1]         += inSumSquaresBlock[1];
-    refIntervalPeak          = juce::jmax (refIntervalPeak, blockRefPeakLinear);
-    inIntervalPeak[0]        = juce::jmax (inIntervalPeak[0], inPeakLinear[0]);
-    inIntervalPeak[1]        = juce::jmax (inIntervalPeak[1], inPeakLinear[1]);
+    for (int ch = 0; ch < refChannels; ++ch)
+    {
+        refSumSquares[ch]   += refSumSquaresBlock[ch];
+        refIntervalPeak[ch]  = juce::jmax (refIntervalPeak[ch], refPeakLinearBlock[ch]);
+    }
+
+    for (int ch = 0; ch < channelsToAnalyse; ++ch)
+    {
+        inSumSquares[ch]   += inSumSquaresBlock[ch];
+        inIntervalPeak[ch]  = juce::jmax (inIntervalPeak[ch], inPeakLinear[ch]);
+        intervalClipCountPerChannel[ch] += stats.clipCountPerChannel[ch];
+    }
+
     intervalClipCount        += blockClipCount;
     intervalStatusBits       |= statusBitsFromEngine;
 
@@ -271,15 +280,26 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
         m.sampleRate     = sampleRate;
         m.bufferSize     = numSamples;
 
-        m.refPeakDb = linearToDb (refIntervalPeak);
-        m.refRmsDb  = linearToDb ((float) std::sqrt (refSumSquares / (double) (samplesForAverage * juce::jmax (1, refChannels))));
+        m.numOutputChannels = refChannels;
+        m.numInputChannels  = channelsToAnalyse;
 
-        m.inPeakDbL = linearToDb (inIntervalPeak[0]);
-        m.inPeakDbR = linearToDb (inIntervalPeak[1]);
-        m.inRmsDbL  = linearToDb ((float) std::sqrt (inSumSquares[0] / (double) samplesForAverage));
-        m.inRmsDbR  = linearToDb ((float) std::sqrt (inSumSquares[1] / (double) samplesForAverage));
+        for (int ch = 0; ch < refChannels; ++ch)
+        {
+            m.refPeakDb[ch] = linearToDb (refIntervalPeak[ch]);
+            m.refRmsDb[ch]  = linearToDb ((float) std::sqrt (refSumSquares[ch] / (double) samplesForAverage));
+        }
 
-        m.gainDiffDb = juce::jmax (m.inRmsDbL, m.inRmsDbR) - m.refRmsDb;
+        for (int ch = 0; ch < channelsToAnalyse; ++ch)
+        {
+            m.inPeakDb[ch] = linearToDb (inIntervalPeak[ch]);
+            m.inRmsDb[ch]  = linearToDb ((float) std::sqrt (inSumSquares[ch] / (double) samplesForAverage));
+
+            const int refCh = juce::jlimit (0, refChannels - 1,
+                                            referenceOutputForInput[ch].load (std::memory_order_relaxed));
+            m.gainDiffDb[ch] = m.inRmsDb[ch] - m.refRmsDb[refCh];
+            m.clipCountPerChannel[ch] = intervalClipCountPerChannel[ch];
+        }
+
         m.correlation = 0.0f;
 
         m.dropoutFlag    = intervalDropoutSeen ? 1 : 0;
@@ -290,12 +310,16 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
 
         // Reset interval accumulators.
         samplesIntoInterval = 0;
-        refSumSquares       = 0.0;
-        inSumSquares[0]      = 0.0;
-        inSumSquares[1]      = 0.0;
-        refIntervalPeak      = 0.0f;
-        inIntervalPeak[0]    = 0.0f;
-        inIntervalPeak[1]    = 0.0f;
+
+        for (int ch = 0; ch < maxChannels; ++ch)
+        {
+            refSumSquares[ch]   = 0.0;
+            inSumSquares[ch]    = 0.0;
+            refIntervalPeak[ch] = 0.0f;
+            inIntervalPeak[ch]  = 0.0f;
+            intervalClipCountPerChannel[ch] = 0;
+        }
+
         intervalClipCount    = 0;
         intervalStatusBits   = StatusBits::ok;
         intervalDropoutSeen  = false;
@@ -314,9 +338,11 @@ void AnalysisProcessor::noteDropoutActive() noexcept
 //==============================================================================
 void AnalysisProcessor::resetPeakHold() noexcept
 {
-    atomicRefPeakHoldDb.store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakHoldDb[0].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakHoldDb[1].store (silenceFloorDb, std::memory_order_relaxed);
+    for (int ch = 0; ch < maxChannels; ++ch)
+    {
+        atomicRefPeakHoldDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicInPeakHoldDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+    }
 }
 
 double AnalysisProcessor::getElapsedSeconds() const noexcept

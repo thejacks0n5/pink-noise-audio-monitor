@@ -109,7 +109,9 @@ public:
 
     /** Baseline round-trip gain (dB) captured after settling; NaN until
         captured. Atomic; UI display only. */
-    float getBaselineGainDiffDb() const noexcept;
+    /** Captured round-trip baseline for one input channel, or NaN if not yet
+        captured. Each input has its own, since each references its own output. */
+    float getBaselineGainDiffDb (int inputChannel = 0) const noexcept;
 
     /** MESSAGE THREAD. Re-arm baseline capture (e.g. after the user changes
         levels deliberately). Takes effect at the next block. */
@@ -130,13 +132,17 @@ private:
         int64_t accumulatedCount { 0 };     ///< e.g. total clipped samples in a run.
     };
 
-    ConditionState dropoutState, clippingState, levelChangeState;
+    // One independent state machine per input channel, so a fault on one input
+    // neither masks nor duplicates a fault on another.
+    ConditionState dropoutState[maxChannels], clippingState[maxChannels],
+                   levelChangeState[maxChannels];
 
-    // Baseline capture
-    std::atomic<float> baselineGainDiffDb { std::numeric_limits<float>::quiet_NaN() };
+    // Baseline capture, per input channel (each input has its own round-trip
+    // gain against whichever output it references).
+    std::atomic<float> baselineGainDiffDb[maxChannels];
     std::atomic<bool>  baselineRecaptureRequested { true };
     double             baselineAccumSeconds { 0.0 };
-    double             baselineAccumSum     { 0.0 };
+    double             baselineAccumSum[maxChannels] {};
     int64_t            baselineAccumBlocks  { 0 };
 
     // Threshold double-buffer (message thread writes inactive slot, flips index)
@@ -147,7 +153,7 @@ private:
     double  rateWindowStartSeconds { 0.0 };
     int     eventsThisWindow       { 0 };
 
-    // Published flags
+    // Published flags — true when ANY input channel has the condition active.
     std::atomic<bool> dropoutActiveAtomic  { false };
     std::atomic<bool> clippingActiveAtomic { false };
 

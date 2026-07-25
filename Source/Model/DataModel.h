@@ -122,6 +122,10 @@ struct Measurement
     /** Per-input round-trip gain: inRmsDb[i] minus the reference RMS of the
         output channel that input is referenced against. */
     float   gainDiffDb[maxChannels] {};
+
+    /** Clipped input samples during the interval, split per input channel. */
+    int32_t clipCountPerChannel[maxChannels] {};
+
     float   correlation    { 0.0f };  ///< Ref/input correlation coefficient [-1..1]. May be 0.0 in V1 (unimplemented).
 
     int32_t dropoutFlag    { 0 };     ///< 1 if a dropout condition was active at any point in the interval, else 0.
@@ -187,8 +191,19 @@ struct SessionInfo
     juce::Time   startTimeUtc;             ///< Wall-clock UTC start; anchors elapsedSeconds -> timestamps.
     double       sampleRate      { 0.0 };  ///< Device sample rate at session start (Hz).
     int          bufferSize      { 0 };    ///< Device buffer size at session start (samples).
-    int          numOutputChannels { 2 };  ///< 1 (mono) or 2 (stereo).
-    int          numInputChannels  { 2 };  ///< 1 (mono) or 2 (stereo).
+    int          numOutputChannels { 2 };  ///< Active output channels (<= maxChannels).
+    int          numInputChannels  { 2 };  ///< Active input channels (<= maxChannels).
+
+    /** User-facing names, one per active channel, in channel order. These name
+        the per-channel columns in measurements.csv and the `channel` column in
+        events.csv, so a log is readable without knowing the patch. Missing
+        entries fall back to "Out n" / "In n". */
+    juce::StringArray outputChannelNames;
+    juce::StringArray inputChannelNames;
+
+    /** referenceOutputForInput[i] = which output channel input i is compared
+        against. Recorded so a log can be interpreted after the fact. */
+    juce::Array<int>  referenceOutputForInput;
     juce::String inputDeviceName;          ///< As reported by juce::AudioDeviceManager.
     juce::String outputDeviceName;
     uint64_t     pinkNoiseSeed   { 0 };    ///< Seed given to PinkNoiseGenerator (deterministic replay).
