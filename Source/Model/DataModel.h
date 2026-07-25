@@ -79,6 +79,17 @@ namespace StatusBits
     CSV writers emit this literally; UIs clamp their meters at/above it. */
 constexpr float silenceFloorDb = -120.0f;
 
+/** Hard ceiling on input/output channels carried through the audio→message
+    FIFOs.
+
+    Measurement must stay a fixed-size, trivially-copyable POD: that is what lets
+    the audio thread hand data to the message thread without allocating or
+    locking (see ARCHITECTURE.md and the real-time rule in CLAUDE.md). Channel
+    counts are therefore runtime values bounded by this constant rather than
+    unbounded. Devices exposing more than this are clamped, and the clamp is
+    reported once as an AudioSettingsChanged event. */
+constexpr int maxChannels = 64;
+
 //==============================================================================
 /**
     One measurement snapshot, pushed from the AUDIO thread into the
@@ -98,15 +109,19 @@ struct Measurement
     double  sampleRate     { 0.0 };   ///< Current device sample rate (Hz).
     int32_t bufferSize     { 0 };     ///< Current device buffer size in samples.
 
-    float   refPeakDb      { silenceFloorDb }; ///< Reference (generated) peak over the interval, dBFS.
-    float   refRmsDb       { silenceFloorDb }; ///< Reference RMS over the interval, dBFS.
+    /** Valid entries in the per-channel arrays below. Both are <= maxChannels. */
+    int32_t numOutputChannels { 0 };
+    int32_t numInputChannels  { 0 };
 
-    float   inPeakDbL      { silenceFloorDb }; ///< Returned input peak, channel L, dBFS.
-    float   inPeakDbR      { silenceFloorDb }; ///< Returned input peak, channel R, dBFS.
-    float   inRmsDbL       { silenceFloorDb }; ///< Returned input RMS, channel L, dBFS.
-    float   inRmsDbR       { silenceFloorDb }; ///< Returned input RMS, channel R, dBFS.
+    float   refPeakDb[maxChannels] {};  ///< Per-output reference peak, dBFS.
+    float   refRmsDb[maxChannels]  {};  ///< Per-output reference RMS, dBFS.
 
-    float   gainDiffDb     { 0.0f };  ///< inRms (max of L/R) minus refRms, dB. Round-trip gain estimate.
+    float   inPeakDb[maxChannels]  {};  ///< Per-input returned peak, dBFS.
+    float   inRmsDb[maxChannels]   {};  ///< Per-input returned RMS, dBFS.
+
+    /** Per-input round-trip gain: inRmsDb[i] minus the reference RMS of the
+        output channel that input is referenced against. */
+    float   gainDiffDb[maxChannels] {};
     float   correlation    { 0.0f };  ///< Ref/input correlation coefficient [-1..1]. May be 0.0 in V1 (unimplemented).
 
     int32_t dropoutFlag    { 0 };     ///< 1 if a dropout condition was active at any point in the interval, else 0.
@@ -133,6 +148,14 @@ struct Event
     EventType type          { EventType::Other };
     Severity  severity      { Severity::Info };
     ChannelId channel       { ChannelId::None };
+
+    /** Index of the channel this event belongs to, or -1 when it applies to no
+        single channel. With more than two channels this — not `channel` — is the
+        authoritative identifier; the CSV renders it as the user's channel name.
+        `channel` is retained so existing two-channel logs stay readable. */
+    int32_t   channelIndex  { -1 };
+    /** True when channelIndex refers to an input channel, false for an output. */
+    bool      channelIsInput { true };
 
     double    elapsedSeconds{ 0.0 };  ///< Session-relative time of the event (audio clock).
 

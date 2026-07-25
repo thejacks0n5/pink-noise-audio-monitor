@@ -151,11 +151,13 @@ public:
 
 private:
     //==========================================================================
-    static constexpr int maxChannels = 2;
+    // Shared with the FIFO payload ceiling so the generator can feed every
+    // output channel the device exposes (see DataModel.h).
+    static constexpr int maxChannels = pnam::maxChannels;
 
     // Deterministic core (audio thread only after setup)
-    uint64_t prngState[maxChannels] { 0, 0 };
-    float    kelletState[maxChannels][3] { { 0, 0, 0 }, { 0, 0, 0 } };
+    uint64_t prngState[maxChannels] {};
+    float    kelletState[maxChannels][3] {};
     int64_t  samplesGenerated { 0 };
     uint64_t seedInUse { 0 };
 
