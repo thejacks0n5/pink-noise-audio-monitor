@@ -89,6 +89,12 @@ bool AudioEngine::start()
     // clock underneath a live callback is a data race, and the reset can be
     // lost when the audio thread writes back a stale sample count.
     // removeAudioCallback blocks until the callback returns, so this is safe.
+    // The detach fires audioDeviceStopped, which must not be reported as a
+    // device loss — without this bracket every Start Audio logged a spurious
+    // AudioDeviceLost warning.
+    const bool wasExpected = expectedDeviceChange.load (std::memory_order_relaxed);
+    expectedDeviceChange.store (true, std::memory_order_relaxed);
+
     deviceManager.removeAudioCallback (this);
 
     // A genuine session start: clock to zero and every detector state machine
@@ -110,6 +116,7 @@ bool AudioEngine::start()
     // Re-attaching calls audioDeviceAboutToStart, which prepares the generator,
     // histories, analysis and detector for the live device and starts the fade.
     deviceManager.addAudioCallback (this);
+    expectedDeviceChange.store (wasExpected, std::memory_order_relaxed);
 
     running.store (true, std::memory_order_relaxed);
     return true;
