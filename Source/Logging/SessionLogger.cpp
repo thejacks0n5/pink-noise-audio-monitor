@@ -262,9 +262,10 @@ juce::String SessionLogger::composeDescription (const Event& e)
                 return "Dropout started (input " + juce::String (e.measuredValue, 1)
                         + " dB, expected " + juce::String (e.expectedValue, 1) + " dB)";
             if (e.code == eventCodeEnd)
-                return "Dropout ended after " + juce::String (e.measuredValue, 2)
-                        + " s (input " + juce::String (e.difference, 1)
-                        + " dB, expected " + juce::String (e.expectedValue, 1) + " dB)";
+                // End events carry the duration in measuredValue and difference;
+                // there is no meaningful dB reading to report, and printing
+                // `difference` as one produced nonsense like "input 484.6 dB".
+                return "Dropout ended after " + juce::String (e.measuredValue, 2) + " s";
             return "Dropout (" + channelText + ")";
         }
 
