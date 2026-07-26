@@ -254,19 +254,36 @@ void LevelMeterComponent::paint (juce::Graphics& g)
                 g.fillRect (litRect);
             }
 
-            // Per-bar caption, so a wall of bars is still readable.
-            if (bar.getWidth() >= 14)
+            // Per-bar caption, rotated 90 degrees console-style: a vertical
+            // label's usable length is the strip HEIGHT, not the bar width, so
+            // real names ("left out") fit under bars only a few pixels wide
+            // instead of truncating to "eft out". Needs ~9 px of pitch for the
+            // glyph height; below that there is no room for any text at all.
+            if (bar.getWidth() + gap >= 9)
             {
                 const auto label = juce::isPositiveAndBelow (ch, channelNames.size())
                                      && channelNames[ch].isNotEmpty()
                                        ? channelNames[ch]
                                        : juce::String (ch + 1);
 
+                const juce::Rectangle<int> strip (bar.getX(), nameArea.getY(),
+                                                  bar.getWidth(), nameArea.getHeight());
+
+                juce::Graphics::ScopedSaveState rotated (g);
+                g.addTransform (juce::AffineTransform::rotation (
+                    -juce::MathConstants<float>::halfPi,
+                    (float) strip.getCentreX(), (float) strip.getCentreY()));
+
+                // After rotating about the strip's centre, draw into a rect with
+                // swapped dimensions on the same centre. Right-justified so the
+                // text starts at the top of the strip, next to its bar.
+                juce::Rectangle<int> textRect (0, 0, strip.getHeight(), strip.getWidth());
+                textRect.setCentre (strip.getCentre());
+
                 g.setColour (Palette::get (Palette::textSecondary));
-                g.setFont (juce::Font (juce::FontOptions (9.0f)));
-                g.drawFittedText (label,
-                                  bar.getX() - 2, nameArea.getY(), bar.getWidth() + 4, nameArea.getHeight(),
-                                  juce::Justification::centred, 1);
+                g.setFont (juce::Font (juce::FontOptions (9.5f)));
+                g.drawFittedText (label, textRect.reduced (2, 0),
+                                  juce::Justification::centredRight, 1);
             }
 
             // RMS translucent overlay
@@ -346,7 +363,8 @@ void LevelMeterComponent::resized()
 
     // Reserve a strip under the bars for the per-channel name captions, so they
     // are not drawn over the readout or clipped off the bottom.
-    nameArea = bounds.removeFromBottom (12);
+    // Tall enough for a rotated ~8-character name at 9.5 pt.
+    nameArea = bounds.removeFromBottom (48);
 
     barArea = bounds;
 }
