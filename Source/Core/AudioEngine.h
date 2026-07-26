@@ -100,6 +100,12 @@ public:
 
     bool isRunning() const noexcept { return running.load (std::memory_order_relaxed); }
 
+    /** True while the device callback is attached but no noise is being emitted
+        — the state the app sits in before Start Audio and after Stop Audio.
+        Input is still captured and analysed so the meters stay live, which is
+        what lets a user find a patch point without playing noise. */
+    bool isOutputSilenced() const noexcept { return outputSilenced.load (std::memory_order_relaxed); }
+
     juce::AudioDeviceManager& getDeviceManager() noexcept { return deviceManager; }
 
     AnalysisProcessor&  getAnalysis()  noexcept { return analysisProcessor; }
@@ -156,6 +162,11 @@ private:
 
     // Set by MainComponent around a user-initiated device reconfiguration.
     std::atomic<bool> expectedDeviceChange { false };
+
+    // True whenever the callback is running purely to meter the input. Starts
+    // true: the callback is attached as soon as a device is open, so input
+    // meters work from launch rather than only after Start Audio.
+    std::atomic<bool> outputSilenced { true };
 
     std::atomic<double> currentSampleRate        { 0.0 };
     std::atomic<int>    currentBufferSize        { 0 };

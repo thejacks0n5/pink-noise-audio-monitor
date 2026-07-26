@@ -47,6 +47,16 @@ juce::String AudioEngine::initialiseDevices (const juce::XmlElement* savedState)
         error = deviceManager.initialise (1, 1, savedState, true);
 
     devicesInitialised = deviceManager.getCurrentAudioDevice() != nullptr;
+
+    // Attach the callback immediately, with output silenced. Input is captured
+    // and analysed from this point, so the input meters move while the user is
+    // patching — before Start Audio has ever been pressed.
+    if (devicesInitialised)
+    {
+        outputSilenced.store (true, std::memory_order_relaxed);
+        deviceManager.addAudioCallback (this);
+    }
+
     return error;
 }
 
@@ -74,13 +84,21 @@ bool AudioEngine::start()
         return false;
 
     // A genuine session start — the only place the session clock goes back to
-    // zero. Safe here: the device callback is not attached yet.
+    // zero. The callback may already be attached (silently metering input), so
+    // silence it while resetting to keep the reset off a live analysis pass.
+    outputSilenced.store (true, std::memory_order_relaxed);
     analysisProcessor.resetSessionClock();
 
     samplesSinceStart = 0;
     previousGainLinear = 0.0f;
 
+    // Idempotent: does nothing if initialiseDevices() already attached it.
     deviceManager.addAudioCallback (this);
+
+    generator.reset();
+    outputSilenced.store (false, std::memory_order_relaxed);
+    generator.startFade (true);
+
     running.store (true, std::memory_order_relaxed);
     return true;
 }
@@ -97,8 +115,10 @@ void AudioEngine::stop()
     while (generator.isFadeActive() && guardIterations++ < 400) // bounded: ~2 s max wait
         juce::Thread::sleep (5);
 
-    deviceManager.removeAudioCallback (this);
-    deviceManager.closeAudioDevice();
+    // Keep the callback attached and the device open: output goes silent but
+    // input is still captured, so the meters keep moving and the user can see
+    // which input they are patching.
+    outputSilenced.store (true, std::memory_order_relaxed);
 
     running.store (false, std::memory_order_relaxed);
 }
@@ -222,8 +242,15 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputCha
         if (outputChannelData[ch] != nullptr)
             juce::FloatVectorOperations::clear (outputChannelData[ch], numSamples);
 
-    // 1. Generate reference block -> output (writes ReferenceHistory itself).
-    generator.processBlock (outputChannelData, numOutputChannels, numSamples);
+    // 1. Reference block -> output. While silenced the outputs stay at the zero
+    //    fill above, and that silence is written to the reference history so the
+    //    reference meters read silence instead of holding a stale picture.
+    const bool silenced = outputSilenced.load (std::memory_order_relaxed);
+
+    if (silenced)
+        referenceHistory.write (outputChannelData, numOutputChannels, numSamples);
+    else
+        generator.processBlock (outputChannelData, numOutputChannels, numSamples);
 
     // Retain the returned input for the waveform display (no analysis use).
     if (numInputChannels > 0 && inputChannelData != nullptr)
@@ -232,7 +259,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputCha
     // 2. Build statusBits.
     int32_t statusBits = StatusBits::ok;
 
-    if (generator.isMuted())
+    // Silenced output must suppress detection: with no reference signal every
+    // input would otherwise look like a complete dropout.
+    if (silenced || generator.isMuted())
         statusBits |= StatusBits::outputMuted;
 
     if (generator.isFadeActive())
