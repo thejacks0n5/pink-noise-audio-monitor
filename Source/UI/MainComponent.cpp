@@ -279,7 +279,7 @@ namespace
             addAndMakeVisible (chooseFolderButton);
             chooseFolderButton.onClick = [this] { chooseLogFolder(); };
 
-            setSize (420, 340);
+            setSize (460, 312);
         }
 
     private:
@@ -330,7 +330,7 @@ namespace
             auto row = [&b] (juce::Component& label, juce::Component& control, int h = 24)
             {
                 auto r = b.removeFromTop (h);
-                label.setBounds (r.removeFromLeft (230));
+                label.setBounds (r.removeFromLeft (200));
                 control.setBounds (r);
                 b.removeFromTop (6);
             };
@@ -440,6 +440,18 @@ MainComponent::MainComponent()
 
     loadChannelConfig();
     refreshChannelConfig();
+    loadWaveformConfig();
+
+    waveform.onLaneConfigChanged = [this] { saveWaveformConfig(); };
+
+    // Restore the last output level so an overnight rig comes back at the level
+    // it was calibrated to, not the default.
+    {
+        const double savedDb = appProperties.getUserSettings()
+                                   ->getDoubleValue ("outputLevelDb", PinkNoiseGenerator::defaultLevelDb);
+        engine->getGenerator().setLevelDb (savedDb);
+        transport.setOutputLevelDb (savedDb);
+    }
 
     wireTransport();
     transport.setOutputLevelDb (PinkNoiseGenerator::defaultLevelDb);
@@ -525,7 +537,15 @@ void MainComponent::timerCallback()
     // While the Audio Device Setup dialog is open, every device stop/restart is
     // the user changing something — don't report those as faults. (Changes made
     // from the status-bar menus are bracketed by applyDeviceSetup instead.)
-    engine->setExpectedDeviceChange (deviceSetupWindow != nullptr);
+    const bool expectingNow = deviceSetupWindow != nullptr;
+    engine->setExpectedDeviceChange (expectingNow);
+
+    // The suppression window just closed: anything that died inside it was
+    // swallowed, so check the device is actually still there.
+    if (wasExpectingDeviceChange && ! expectingNow)
+        checkDeviceStillPresent();
+
+    wasExpectingDeviceChange = expectingNow;
 
     drainMeasurementQueue();
     drainEventQueue();
@@ -796,6 +816,8 @@ void MainComponent::setLoggingPaused (bool shouldPause)
 
 void MainComponent::setOutputLevelDb (double newLevelDb)
 {
+    appProperties.getUserSettings()->setValue ("outputLevelDb", newLevelDb);
+
     engine->getGenerator().setLevelDb (newLevelDb);
 }
 
@@ -987,7 +1009,41 @@ juce::String MainComponent::applyDeviceSetup (const juce::AudioDeviceManager::Au
     const auto error = engine->getDeviceManager().setAudioDeviceSetup (newSetup, true);
     engine->setExpectedDeviceChange (deviceSetupWindow != nullptr);
 
+    // If the hardware refused this configuration the stop was swallowed by the
+    // expected-change window — surface it now rather than pretending to run.
+    checkDeviceStillPresent();
+
     return error;
+}
+
+void MainComponent::checkDeviceStillPresent()
+{
+    if (engine->getDeviceManager().getCurrentAudioDevice() != nullptr)
+        return;
+
+    const bool wasRunning = engine->isRunning();
+    engine->setExpectedDeviceChange (false);
+
+    Event e {};
+    e.type           = EventType::AudioDeviceLost;
+    e.severity       = Severity::Critical;
+    e.channel        = ChannelId::None;
+    e.elapsedSeconds = engine->getAnalysis().getElapsedSeconds();
+    e.code           = eventCodeInstant;
+
+    const auto description = juce::String ("Audio device lost during reconfiguration");
+    eventLog.addEvent (e, description, sessionStartUtc + juce::RelativeTime (e.elapsedSeconds));
+
+    if (sessionLogger.isSessionActive() && ! loggingPaused)
+        sessionLogger.logEvent (e, description);
+
+    maybeNotify (e, description);
+
+    if (wasRunning)
+        stopAudio();
+
+    statusBar.setAudioEngineState (TopStatusBar::EngineState::deviceError);
+    statusBar.setAppStatus ("Device lost - check connections");
 }
 
 void MainComponent::saveDeviceState()
@@ -1262,6 +1318,76 @@ void MainComponent::openLogFileSetup()
     chooseLogDestination (nullptr);
 }
 
+void MainComponent::toggleAudio()
+{
+    if (engine->isRunning())
+        stopAudio();
+    else
+        startAudio();
+}
+
+void MainComponent::toggleLogging()
+{
+    if (sessionLogger.isSessionActive())
+        stopLogging();
+    else
+        startLogging();
+}
+
+void MainComponent::addMarkerNow()
+{
+    if (sessionLogger.isSessionActive())
+        addManualMarker();
+}
+
+void MainComponent::loadWaveformConfig()
+{
+    auto* settings = appProperties.getUserSettings();
+
+    const int count = settings->getIntValue ("waveformLaneCount", 2);
+    waveform.setNumLanes (count);
+
+    const auto tokens = juce::StringArray::fromTokens (settings->getValue ("waveformLaneSources", {}), ",", {});
+
+    for (int lane = 0; lane < tokens.size() && lane < WaveformDisplay::maxLanes; ++lane)
+    {
+        const auto token = tokens[lane].trim();
+        WaveformDisplay::LaneSource src;
+
+        if (token.startsWith ("out:"))
+        {
+            src.isInput = false;
+            src.channel = token.fromFirstOccurrenceOf (":", false, false).getIntValue();
+            src.active  = true;
+        }
+        else if (token.startsWith ("in:"))
+        {
+            src.isInput = true;
+            src.channel = token.fromFirstOccurrenceOf (":", false, false).getIntValue();
+            src.active  = true;
+        }
+
+        waveform.setLaneSource (lane, src);
+    }
+}
+
+void MainComponent::saveWaveformConfig()
+{
+    juce::StringArray tokens;
+
+    for (int lane = 0; lane < waveform.getNumLanes(); ++lane)
+    {
+        const auto src = waveform.getLaneSource (lane);
+        tokens.add (! src.active ? "off"
+                                 : (src.isInput ? "in:" : "out:") + juce::String (src.channel));
+    }
+
+    auto* settings = appProperties.getUserSettings();
+    settings->setValue ("waveformLaneCount", waveform.getNumLanes());
+    settings->setValue ("waveformLaneSources", tokens.joinIntoString (","));
+    settings->saveIfNeeded();
+}
+
 void MainComponent::openChannelSetup()
 {
     // Naming now lives inside the Audio Device Setup dialog, alongside the
@@ -1325,6 +1451,8 @@ void MainComponent::refreshChannelConfig()
 
     inputMeter.setNumChannels (juce::jmax (1, ins));
     inputMeter.setChannelNames (inputChannelNames);
+
+    eventLog.setChannelNames (outputChannelNames, inputChannelNames);
 
 }
 

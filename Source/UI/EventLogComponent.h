@@ -71,6 +71,11 @@ public:
     /** Removes all rows (Reset Session / user pressed Clear). */
     void clear();
 
+    /** User channel names, used to render the Ch column so it matches the CSV.
+        Index = channel index; missing entries fall back to "In n"/"Out n". */
+    void setChannelNames (const juce::StringArray& outputNames,
+                          const juce::StringArray& inputNames);
+
     /** Total events ever added this run (not reduced by ring-drop/clear-…);
         shown in the toolbar as "N events". */
     juce::int64 getTotalEventsReceived() const noexcept;
@@ -149,6 +154,8 @@ private:
     juce::Label countLabel;               // "123 events (2 hidden)"
 
     juce::TableListBox table { "eventLog", this };
+
+    juce::StringArray outputChannelNames, inputChannelNames;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EventLogComponent)
 };

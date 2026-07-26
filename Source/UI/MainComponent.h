@@ -147,6 +147,14 @@ public:
         columns and the events file. */
     void openChannelSetup();
 
+    /** Menu-driven transport (Main.cpp binds these to keyboard shortcuts). */
+    void toggleAudio();
+    void toggleLogging();
+    void addMarkerNow();
+
+    /** Exposed so the window can persist its bounds alongside the app state. */
+    juce::PropertiesFile* getUserSettings() { return appProperties.getUserSettings(); }
+
 private:
     //==========================================================================
     // juce::Timer — the single ~30 Hz message-thread pump (see header block)
@@ -202,6 +210,15 @@ private:
         an AudioDeviceLost fault. @returns the device error, empty on success. */
     juce::String applyDeviceSetup (const juce::AudioDeviceManager::AudioDeviceSetup&);
 
+    /** The expected-change window suppresses audioDeviceStopped, so a device
+        that genuinely died during it (unplugged mid-dialog, or a setup the
+        hardware refused) would leave the app claiming to run forever. Called
+        whenever the window closes and after every apply: if no device is open,
+        reports the loss and reflects the stopped state everywhere. */
+    void checkDeviceStillPresent();
+
+    bool wasExpectingDeviceChange = false;
+
     /** Last setup we reported on, so changes can be described as before → after. */
     juce::AudioDeviceManager::AudioDeviceSetup lastKnownSetup;
 
@@ -219,6 +236,10 @@ private:
 
     void loadChannelConfig();
     void saveChannelConfig();
+
+    /** Waveform lane layout, persisted like the channel names. */
+    void loadWaveformConfig();
+    void saveWaveformConfig();
 
     juce::StringArray outputChannelNames, inputChannelNames;
     juce::Array<int>  referenceOutputForInput;

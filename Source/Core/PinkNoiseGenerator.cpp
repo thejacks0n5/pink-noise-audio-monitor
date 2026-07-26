@@ -216,13 +216,29 @@ void PinkNoiseGenerator::processBlock (float* const* out, int numChannels, int n
 
     for (int ch = 0; ch < channelsToGenerate; ++ch)
     {
-        const int streamIdx = independent ? ch : 0;
         float* dest     = out[ch];
         float* lastDest = lastBlock.getWritePointer (ch);
 
         if (dest == nullptr)
             continue;
 
+        // LinkedMono: generate channel 0 once and COPY it to the rest. The old
+        // code pointed every channel at stream 0 but let each channel's loop
+        // advance it, so "linked" channels actually got successive, decorrelated
+        // chunks of one stream — and determinism depended on the channel count.
+        if (! independent && ch > 0)
+        {
+            const float* src = lastBlock.getReadPointer (0);
+            juce::FloatVectorOperations::copy (dest, src, gainSamples);
+            juce::FloatVectorOperations::copy (lastDest, src, gainSamples);
+
+            for (int i = gainSamples; i < numSamples; ++i)
+                dest[i] = 0.0f;
+
+            continue;
+        }
+
+        const int streamIdx = independent ? ch : 0;
         uint64_t& prng = prngState[streamIdx];
         float& b0 = kelletState[streamIdx][0];
         float& b1 = kelletState[streamIdx][1];

@@ -353,9 +353,31 @@ juce::StringArray SessionLogger::getMeasurementCsvHeader (const SessionInfo& inf
     const int outs = juce::jlimit (0, maxChannels, info.numOutputChannels);
     const int ins  = juce::jlimit (0, maxChannels, info.numInputChannels);
 
+    // Sanitised names must stay unique: two channels named "Booth L" and
+    // "booth-l" would otherwise collapse into identical column names and break
+    // any ingestion that keys on the header. Blank results fall back to the
+    // positional name; duplicates get a numeric suffix.
+    juce::StringArray usedNames;
+
+    const auto uniqueColumn = [&usedNames, &columnise] (juce::String name,
+                                                        const juce::String& fallback) -> juce::String
+    {
+        auto n = columnise (name);
+
+        if (n.isEmpty())
+            n = fallback;
+
+        auto candidate = n;
+        for (int suffix = 2; usedNames.contains (candidate); ++suffix)
+            candidate = n + "_" + juce::String (suffix);
+
+        usedNames.add (candidate);
+        return candidate;
+    };
+
     for (int ch = 0; ch < outs; ++ch)
     {
-        const auto n = columnise (channelName (info, ch, false));
+        const auto n = uniqueColumn (channelName (info, ch, false), "out_" + juce::String (ch + 1));
         header.add (n + "_peak_db");
         header.add (n + "_rms_db");
     }
@@ -365,7 +387,7 @@ juce::StringArray SessionLogger::getMeasurementCsvHeader (const SessionInfo& inf
         if (! isInputLogged (info, ch))
             continue;
 
-        const auto n = columnise (channelName (info, ch, true));
+        const auto n = uniqueColumn (channelName (info, ch, true), "in_" + juce::String (ch + 1));
         header.add (n + "_peak_db");
         header.add (n + "_rms_db");
         header.add (n + "_gain_diff_db");

@@ -28,7 +28,13 @@ WaveformDisplay::WaveformDisplay()
         laneCountSelector.addItem (juce::String (n) + (n == 1 ? " lane" : " lanes"), n);
 
     laneCountSelector.setSelectedId (numLanes, juce::dontSendNotification);
-    laneCountSelector.onChange = [this] { setNumLanes (laneCountSelector.getSelectedId()); };
+    laneCountSelector.onChange = [this]
+    {
+        setNumLanes (laneCountSelector.getSelectedId());
+
+        if (onLaneConfigChanged != nullptr)
+            onLaneConfigChanged();
+    };
     addAndMakeVisible (laneCountSelector);
 
     rebuildLaneSelectors();
@@ -117,6 +123,21 @@ WaveformDisplay::LaneSource WaveformDisplay::getLaneSource (int lane) const noex
     return laneSources[lane];
 }
 
+void WaveformDisplay::setLaneSource (int lane, LaneSource source)
+{
+    if (! juce::isPositiveAndBelow (lane, maxLanes))
+        return;
+
+    laneSources[lane] = source;
+
+    auto& ring = rings[lane];
+    std::fill (ring.columns.begin(), ring.columns.end(), MinMax { 0.0f, 0.0f });
+    ring.writeIndex = ring.columnsFilled = ring.accumCount = 0;
+
+    rebuildLaneSelectors();   // reflects the new selection in the combo
+    dirty = true;
+}
+
 void WaveformDisplay::rebuildLaneSelectors()
 {
     laneSelectors.clear();
@@ -166,6 +187,9 @@ void WaveformDisplay::rebuildLaneSelectors()
 
             dirty = true;
             repaint();
+
+            if (onLaneConfigChanged != nullptr)
+                onLaneConfigChanged();
         };
 
         addAndMakeVisible (box);

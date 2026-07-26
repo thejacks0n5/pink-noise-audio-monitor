@@ -59,6 +59,7 @@ EventLogComponent::EventLogComponent()
     typeFilterBox.addItem ("Audio Device Lost", 6);
     typeFilterBox.addItem ("Logging Error", 7);
     typeFilterBox.addItem ("Other", 8);
+    typeFilterBox.addItem ("Settings Change", 9);
     typeFilterBox.setSelectedId (1, juce::dontSendNotification);
     typeFilterBox.onChange = [this]
     {
@@ -126,6 +127,17 @@ void EventLogComponent::addEvent (const Event& event, const juce::String& descri
         table.scrollToEnsureRowIsOnscreen ((int) visibleRows.size() - 1);
 
     repaint();
+}
+
+void EventLogComponent::setChannelNames (const juce::StringArray& outputNames,
+                                         const juce::StringArray& inputNames)
+{
+    if (outputChannelNames != outputNames || inputChannelNames != inputNames)
+    {
+        outputChannelNames = outputNames;
+        inputChannelNames  = inputNames;
+        table.repaint();
+    }
 }
 
 void EventLogComponent::clear()
@@ -308,9 +320,18 @@ void EventLogComponent::paintCell (juce::Graphics& g, int rowNumber, int columnI
         case colChannel:    // channelIndex is authoritative once there are more than
                             // two channels; `channel` reads "Both" for every per-channel
                             // fault and cannot say which input dropped out.
-                            text = event.channelIndex >= 0
-                                     ? (event.channelIsInput ? "In " : "Out ") + juce::String (event.channelIndex + 1)
-                                     : juce::String (toString (event.channel));
+                            if (event.channelIndex >= 0)
+                            {
+                                const auto& names = event.channelIsInput ? inputChannelNames
+                                                                         : outputChannelNames;
+                                text = juce::isPositiveAndBelow (event.channelIndex, names.size())
+                                         && names[event.channelIndex].isNotEmpty()
+                                       ? names[event.channelIndex]
+                                       : (event.channelIsInput ? "In " : "Out ")
+                                           + juce::String (event.channelIndex + 1);
+                            }
+                            else
+                                text = toString (event.channel);
                             justification = juce::Justification::centred; break;
         case colMeasured:   text = formatNumber (event.measuredValue); useMono = true;
                             justification = juce::Justification::centredRight; break;

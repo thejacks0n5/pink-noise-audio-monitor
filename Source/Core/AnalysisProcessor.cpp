@@ -296,7 +296,9 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
         Measurement m;
         m.elapsedSeconds = getElapsedSeconds();
         m.sampleRate     = sampleRate;
-        m.bufferSize     = numSamples;
+        // The device buffer size, not this callback's block length — CoreAudio
+        // may deliver varying block sizes within one configuration.
+        m.bufferSize     = maxBlock;
 
         m.numOutputChannels = refChannels;
         m.numInputChannels  = channelsToAnalyse;

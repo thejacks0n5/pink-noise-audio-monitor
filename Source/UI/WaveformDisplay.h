@@ -99,6 +99,14 @@ public:
         push into it. */
     LaneSource getLaneSource (int lane) const noexcept;
 
+    /** Programmatically set a lane's source (restoring a saved layout). Updates
+        the lane's selector and clears its ring. */
+    void setLaneSource (int lane, LaneSource source);
+
+    /** Fired whenever the user changes the lane count or any lane's channel —
+        the owner persists the layout. MESSAGE THREAD. */
+    std::function<void()> onLaneConfigChanged;
+
     //==========================================================================
     // Data input (message thread, called from MainComponent::timerCallback)
     /** Appends numSamples raw samples for one trace. Samples are decimated

@@ -210,11 +210,16 @@ void LevelMeterComponent::paint (juce::Graphics& g)
     g.setFont (juce::Font (juce::FontOptions (13.0f)));
     g.drawFittedText (title, titleArea, juce::Justification::centred, 1);
 
-    // Clip lamps
+    // Clip lamps, centred over their bars (the old fixed 14 px pitch diverged
+    // from the bar positions after two channels and ran off the component).
     const int lampSize = 8;
+    const int lampGap  = 4;
+    const int lampBarWidth = juce::jmax (2, (barArea.getWidth() - lampGap * (numChannels - 1) - 26)
+                                              / juce::jmax (1, numChannels));
     for (int ch = 0; ch < numChannels; ++ch)
     {
-        const int lampX = clipArea.getX() + ch * (lampSize + 6);
+        const int lampX = barArea.getX() + ch * (lampBarWidth + lampGap)
+                            + (lampBarWidth - lampSize) / 2;
         juce::Rectangle<int> lamp (lampX, clipArea.getY(), lampSize, lampSize);
         g.setColour (clipLit[ch] ? Palette::get (Palette::meterRed) : Palette::get (Palette::meterTrough));
         g.fillEllipse (lamp.toFloat());

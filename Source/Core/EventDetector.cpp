@@ -29,13 +29,16 @@ namespace
 EventDetector::EventDetector (EventQueue& queueToFill)
     : eventQueue (queueToFill)
 {
-    thresholdSlots[0] = Thresholds{};
-    thresholdSlots[1] = Thresholds{};
+    thresholdShared   = Thresholds{};
+    currentThresholds = Thresholds{};
 
     // Value-initialised atomics would read 0.0, not NaN, breaking the
     // "no baseline captured yet" contract for anything polling before start.
     for (int ch = 0; ch < maxChannels; ++ch)
+    {
         baselineGainDiffDb[ch].store (std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
+        baselineRecaptureRequested[ch].store (true, std::memory_order_relaxed);
+    }
 }
 
 //==============================================================================
@@ -60,12 +63,11 @@ void EventDetector::prepare (double newSampleRate, int /*maximumBlockSize*/)
 
         // The round-trip gain is device-dependent, so it must be recaptured.
         baselineGainDiffDb[ch].store (std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
-        baselineAccumSum[ch] = 0.0;
+        baselineRecaptureRequested[ch].store (true, std::memory_order_relaxed);
+        baselineAccumSeconds[ch] = 0.0;
+        baselineAccumSum[ch]     = 0.0;
+        baselineAccumBlocks[ch]  = 0;
     }
-
-    baselineRecaptureRequested.store (true, std::memory_order_relaxed);
-    baselineAccumSeconds = 0.0;
-    baselineAccumBlocks  = 0;
 
     // The clock may have moved; a stale window would gate events off.
     rateWindowStartSeconds = 0.0;
@@ -81,12 +83,11 @@ void EventDetector::resetSessionState() noexcept
         levelChangeState[ch] = ConditionState{};
 
         baselineGainDiffDb[ch].store (std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
-        baselineAccumSum[ch] = 0.0;
+        baselineRecaptureRequested[ch].store (true, std::memory_order_relaxed);
+        baselineAccumSeconds[ch] = 0.0;
+        baselineAccumSum[ch]     = 0.0;
+        baselineAccumBlocks[ch]  = 0;
     }
-
-    baselineRecaptureRequested.store (true, std::memory_order_relaxed);
-    baselineAccumSeconds = 0.0;
-    baselineAccumBlocks  = 0;
 
     rateWindowStartSeconds = 0.0;
     eventsThisWindow       = 0;
@@ -98,19 +99,42 @@ void EventDetector::resetSessionState() noexcept
 //==============================================================================
 void EventDetector::setThresholds (const Thresholds& newThresholds) noexcept
 {
-    const int inactiveSlot = 1 - activeThresholdSlot.load (std::memory_order_relaxed);
-    thresholdSlots[inactiveSlot] = newThresholds;
-    activeThresholdSlot.store (inactiveSlot, std::memory_order_release);
+    // Seqlock write: odd sequence = write in progress.
+    const auto seq = thresholdSeq.load (std::memory_order_relaxed);
+    thresholdSeq.store (seq + 1, std::memory_order_release);
+    std::atomic_thread_fence (std::memory_order_release);
+    thresholdShared = newThresholds;
+    std::atomic_thread_fence (std::memory_order_release);
+    thresholdSeq.store (seq + 2, std::memory_order_release);
 }
 
 EventDetector::Thresholds EventDetector::getThresholds() const noexcept
 {
-    return thresholdSlots[activeThresholdSlot.load (std::memory_order_acquire)];
+    // Message-thread readers can afford to retry until a stable read.
+    for (;;)
+    {
+        const auto s1 = thresholdSeq.load (std::memory_order_acquire);
+        if ((s1 & 1u) != 0)
+            continue;
+
+        Thresholds copy = thresholdShared;
+        std::atomic_thread_fence (std::memory_order_acquire);
+
+        if (thresholdSeq.load (std::memory_order_relaxed) == s1)
+            return copy;
+    }
 }
 
 void EventDetector::recaptureBaseline() noexcept
 {
-    baselineRecaptureRequested.store (true, std::memory_order_relaxed);
+    for (int ch = 0; ch < maxChannels; ++ch)
+        baselineRecaptureRequested[ch].store (true, std::memory_order_relaxed);
+}
+
+void EventDetector::recaptureBaseline (int inputChannel) noexcept
+{
+    baselineRecaptureRequested[juce::jlimit (0, maxChannels - 1, inputChannel)]
+        .store (true, std::memory_order_relaxed);
 }
 
 float EventDetector::getBaselineGainDiffDb (int inputChannel) const noexcept
@@ -132,7 +156,22 @@ bool EventDetector::isClippingActive() const noexcept
 //==============================================================================
 bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
 {
-    const Thresholds t = thresholdSlots[activeThresholdSlot.load (std::memory_order_acquire)];
+    // Adopt new thresholds only when a stable (even, unchanged) snapshot is
+    // available; otherwise keep using the current copy. Wait-free.
+    {
+        const auto s1 = thresholdSeq.load (std::memory_order_acquire);
+
+        if ((s1 & 1u) == 0)
+        {
+            const Thresholds candidate = thresholdShared;
+            std::atomic_thread_fence (std::memory_order_acquire);
+
+            if (thresholdSeq.load (std::memory_order_relaxed) == s1)
+                currentThresholds = candidate;
+        }
+    }
+
+    const Thresholds& t = currentThresholds;
 
     const double now = stats.blockStartElapsedSeconds;
 
@@ -166,33 +205,39 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
     // Baseline gain-diff capture: accumulate clean-signal gainDiff for
     // baselineCaptureMs once the settling window (handled upstream via the
     // `settling` status bit) has passed and nothing is suppressed/active.
-    if (baselineRecaptureRequested.load (std::memory_order_relaxed))
+    for (int ch = 0; ch < numCh; ++ch)
     {
-        if (! suppressed)
+        if (! baselineRecaptureRequested[ch].load (std::memory_order_relaxed))
+            continue;
+
+        // A channel in active dropout has a meaningless gain-diff; capturing it
+        // would bake a -120 dB "baseline" in. Wait until it recovers, and reset
+        // the window whenever capture is interrupted.
+        const bool unusable = suppressed
+                            || ! stats.inputMonitored[ch]
+                            || dropoutState[ch].phase == ConditionState::Phase::active;
+
+        if (unusable)
         {
-            baselineAccumSeconds += blockSeconds;
-            for (int ch = 0; ch < numCh; ++ch)
-                baselineAccumSum[ch] += (double) stats.gainDiffDb[ch];
-            ++baselineAccumBlocks;
-
-            if (baselineAccumSeconds * 1000.0 >= t.baselineCaptureMs && baselineAccumBlocks > 0)
-            {
-                for (int ch = 0; ch < numCh; ++ch)
-                    baselineGainDiffDb[ch].store ((float) (baselineAccumSum[ch] / (double) baselineAccumBlocks),
-                                                  std::memory_order_relaxed);
-
-                baselineRecaptureRequested.store (false, std::memory_order_relaxed);
-                baselineAccumSeconds = 0.0;
-                for (auto& sum : baselineAccumSum) sum = 0.0;
-                baselineAccumBlocks  = 0;
-            }
+            baselineAccumSeconds[ch] = 0.0;
+            baselineAccumSum[ch]     = 0.0;
+            baselineAccumBlocks[ch]  = 0;
+            continue;
         }
-        else
+
+        baselineAccumSeconds[ch] += blockSeconds;
+        baselineAccumSum[ch]     += (double) stats.gainDiffDb[ch];
+        ++baselineAccumBlocks[ch];
+
+        if (baselineAccumSeconds[ch] * 1000.0 >= t.baselineCaptureMs && baselineAccumBlocks[ch] > 0)
         {
-            // Reset the accumulation window if suppressed mid-capture.
-            baselineAccumSeconds = 0.0;
-            for (auto& sum : baselineAccumSum) sum = 0.0;
-            baselineAccumBlocks  = 0;
+            baselineGainDiffDb[ch].store ((float) (baselineAccumSum[ch] / (double) baselineAccumBlocks[ch]),
+                                          std::memory_order_relaxed);
+
+            baselineRecaptureRequested[ch].store (false, std::memory_order_relaxed);
+            baselineAccumSeconds[ch] = 0.0;
+            baselineAccumSum[ch]     = 0.0;
+            baselineAccumBlocks[ch]  = 0;
         }
     }
 
@@ -327,7 +372,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                         e.type          = EventType::CompleteDropout;
                         e.severity      = Severity::Critical;
                         e.channel       = ChannelId::Both;
-                e.channelIndex  = ch;
+                    e.channelIndex   = ch;
                         e.elapsedSeconds = dropoutState[ch].conditionStartSeconds;
                         e.measuredValue = inRms;
                         e.expectedValue = stats.refRmsDb[refCh];
@@ -350,7 +395,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                     e.type          = EventType::CompleteDropout;
                     e.severity      = Severity::Critical;
                     e.channel       = ChannelId::Both;
-                e.channelIndex  = ch;
+                    e.channelIndex   = ch;
                     e.elapsedSeconds = now;
                     e.measuredValue = now - dropoutState[ch].conditionStartSeconds;
                     e.expectedValue = 0.0;
@@ -384,7 +429,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                     e.type          = EventType::Clipping;
                     e.severity      = Severity::Warning;
                     e.channel       = ChannelId::Both;
-                e.channelIndex  = ch;
+                    e.channelIndex   = ch;
                     e.elapsedSeconds = now;
                     e.measuredValue = (double) stats.clipCountPerChannel[ch];
                     e.expectedValue = 0.0;
@@ -407,7 +452,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                     e.type          = EventType::Clipping;
                     e.severity      = duration * 1000.0 >= t.criticalClipMs ? Severity::Critical : Severity::Warning;
                     e.channel       = ChannelId::Both;
-                e.channelIndex  = ch;
+                    e.channelIndex   = ch;
                     e.elapsedSeconds = now;
                     e.measuredValue = duration;
                     e.expectedValue = 0.0;
@@ -456,7 +501,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                             e.type          = EventType::LevelChange;
                             e.severity      = Severity::Warning;
                             e.channel       = ChannelId::Both;
-                e.channelIndex  = ch;
+                    e.channelIndex   = ch;
                             e.elapsedSeconds = levelChangeState[ch].conditionStartSeconds;
                             e.measuredValue = (double) stats.gainDiffDb[ch];
                             e.expectedValue = (double) baseline;
@@ -480,7 +525,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                         e.type          = EventType::LevelChange;
                         e.severity      = Severity::Warning;
                         e.channel       = ChannelId::Both;
-                e.channelIndex  = ch;
+                    e.channelIndex   = ch;
                         e.elapsedSeconds = now;
                         e.measuredValue = now - levelChangeState[ch].conditionStartSeconds;
                         e.expectedValue = 0.0;
@@ -490,7 +535,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                         tryPush (e);
 
                         // Re-arm the baseline to the new settled level.
-                        recaptureBaseline();
+                        recaptureBaseline (ch);
                     }
                     levelChangeState[ch] = ConditionState{};
                 }

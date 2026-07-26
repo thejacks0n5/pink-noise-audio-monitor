@@ -29,7 +29,10 @@ namespace CommandIDs
         showPreferences = 0x2000,
         showAudioDeviceSetup,
         setLogFile,
-        showChannelSetup
+        showChannelSetup,
+        toggleAudio,
+        toggleLogging,
+        addMarker
     };
 }
 
@@ -54,6 +57,15 @@ public:
         setFullScreen (true);
        #else
         centreWithSize (1120, 720);
+
+        // Restore the last window placement; a monitoring app should come back
+        // exactly where the user left it.
+        if (auto* settings = content->getUserSettings())
+        {
+            const auto state = settings->getValue ("windowState");
+            if (state.isNotEmpty())
+                restoreWindowStateFromString (state);
+        }
        #endif
 
         setVisible (true);
@@ -108,6 +120,14 @@ public:
         juce::MenuBarModel::setMacMainMenu (nullptr);
        #endif
 
+        if (mainWindow != nullptr)
+            if (auto* content = mainWindow->getMainComponent())
+                if (auto* settings = content->getUserSettings())
+                {
+                    settings->setValue ("windowState", mainWindow->getWindowStateAsString());
+                    settings->saveIfNeeded();
+                }
+
         mainWindow = nullptr;
     }
 
@@ -124,11 +144,18 @@ public:
 
         if (topLevelMenuIndex == 0)
         {
+            menu.addCommandItem (&commandManager, CommandIDs::toggleAudio);
+            menu.addSeparator();
             menu.addCommandItem (&commandManager, CommandIDs::showAudioDeviceSetup);
             menu.addCommandItem (&commandManager, CommandIDs::showChannelSetup);
         }
         else if (topLevelMenuIndex == 1)
+        {
+            menu.addCommandItem (&commandManager, CommandIDs::toggleLogging);
+            menu.addCommandItem (&commandManager, CommandIDs::addMarker);
+            menu.addSeparator();
             menu.addCommandItem (&commandManager, CommandIDs::setLogFile);
+        }
 
         return menu;
     }
@@ -147,6 +174,9 @@ public:
         commands.add (CommandIDs::showAudioDeviceSetup);
         commands.add (CommandIDs::setLogFile);
         commands.add (CommandIDs::showChannelSetup);
+        commands.add (CommandIDs::toggleAudio);
+        commands.add (CommandIDs::toggleLogging);
+        commands.add (CommandIDs::addMarker);
     }
 
     void getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result) override
@@ -180,6 +210,21 @@ public:
                                                   | juce::ModifierKeys::shiftModifier);
                 return;
 
+            case CommandIDs::toggleAudio:
+                result.setInfo ("Start/Stop Audio", "Toggle the pink-noise engine", "Transport", 0);
+                result.addDefaultKeypress ('r', juce::ModifierKeys::commandModifier);
+                return;
+
+            case CommandIDs::toggleLogging:
+                result.setInfo ("Start/Stop Logging", "Toggle CSV logging", "Transport", 0);
+                result.addDefaultKeypress ('l', juce::ModifierKeys::commandModifier);
+                return;
+
+            case CommandIDs::addMarker:
+                result.setInfo ("Add Marker", "Drop a manual marker into the log", "Transport", 0);
+                result.addDefaultKeypress ('m', juce::ModifierKeys::commandModifier);
+                return;
+
             default:
                 JUCEApplication::getCommandInfo (commandID, result);
                 return;
@@ -210,6 +255,21 @@ public:
             case CommandIDs::showChannelSetup:
                 if (content != nullptr)
                     content->openChannelSetup();
+                return true;
+
+            case CommandIDs::toggleAudio:
+                if (content != nullptr)
+                    content->toggleAudio();
+                return true;
+
+            case CommandIDs::toggleLogging:
+                if (content != nullptr)
+                    content->toggleLogging();
+                return true;
+
+            case CommandIDs::addMarker:
+                if (content != nullptr)
+                    content->addMarkerNow();
                 return true;
 
             default:

@@ -128,9 +128,14 @@ public:
         captured. Each input has its own, since each references its own output. */
     float getBaselineGainDiffDb (int inputChannel = 0) const noexcept;
 
-    /** MESSAGE THREAD. Re-arm baseline capture (e.g. after the user changes
-        levels deliberately). Takes effect at the next block. */
+    /** MESSAGE THREAD. Re-arm baseline capture on every channel (e.g. after the
+        user changes levels deliberately). Takes effect at the next block. */
     void recaptureBaseline() noexcept;
+
+    /** ANY THREAD. Re-arm baseline capture for one input channel only — used
+        when that channel's level change ends, so other channels' baselines are
+        left untouched. */
+    void recaptureBaseline (int inputChannel) noexcept;
 
 private:
     //==========================================================================
@@ -155,14 +160,24 @@ private:
     // Baseline capture, per input channel (each input has its own round-trip
     // gain against whichever output it references).
     std::atomic<float> baselineGainDiffDb[maxChannels];
-    std::atomic<bool>  baselineRecaptureRequested { true };
-    double             baselineAccumSeconds { 0.0 };
-    double             baselineAccumSum[maxChannels] {};
-    int64_t            baselineAccumBlocks  { 0 };
 
-    // Threshold double-buffer (message thread writes inactive slot, flips index)
-    Thresholds          thresholdSlots[2];
-    std::atomic<int>    activeThresholdSlot { 0 };
+    // Per-channel recapture. A single global flag meant that when one channel's
+    // level change ended and re-armed the baseline, every OTHER channel's
+    // current level — however wrong — was baked into its new baseline too,
+    // silently ending any deviation it was tracking.
+    std::atomic<bool>  baselineRecaptureRequested[maxChannels];
+    double             baselineAccumSeconds[maxChannels] {};
+    double             baselineAccumSum[maxChannels] {};
+    int64_t            baselineAccumBlocks[maxChannels] {};
+
+    // Threshold hand-off: a seqlock. The old two-slot flip could tear — two
+    // rapid setThresholds() calls could write the slot the audio thread was
+    // still copying from. The audio thread now keeps its own copy and only
+    // adopts the shared data when the sequence is even and unchanged across the
+    // read, so it is wait-free and can never observe a torn write.
+    Thresholds              thresholdShared;
+    std::atomic<uint32_t>   thresholdSeq { 0 };
+    Thresholds              currentThresholds;   // audio-thread-owned copy
 
     // Rate limiter
     double  rateWindowStartSeconds { 0.0 };
