@@ -55,12 +55,25 @@ namespace
 AnalysisProcessor::AnalysisProcessor (MeasurementQueue& queueToFill)
     : measurementQueue (queueToFill)
 {
-    atomicInPeakDb[0].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakDb[1].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInRmsDb[0].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInRmsDb[1].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakHoldDb[0].store (silenceFloorDb, std::memory_order_relaxed);
-    atomicInPeakHoldDb[1].store (silenceFloorDb, std::memory_order_relaxed);
+    // EVERY channel must start at the silence floor. These atomics hold dB
+    // values directly, so a default-constructed (zero) one reads as 0 dBFS —
+    // which the meters draw as a full-scale red bar. That is what appeared on
+    // launch, before prepare() had run, for the reference meters and for any
+    // input channel past the first two.
+    for (int ch = 0; ch < maxChannels; ++ch)
+    {
+        atomicRefPeakDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicRefRmsDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicInPeakDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicInRmsDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicRefPeakHoldDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+        atomicInPeakHoldDb[ch].store (silenceFloorDb, std::memory_order_relaxed);
+
+        // Same reasoning: these are read before prepare() too. Default-off
+        // monitoring would silently disable detection on every input.
+        referenceOutputForInput[ch].store (0, std::memory_order_relaxed);
+        inputMonitoredFlags[ch].store (true, std::memory_order_relaxed);
+    }
 }
 
 //==============================================================================
