@@ -33,3 +33,7 @@ xcuserdata/
 # JUCE
 JuceLibraryCode/
 *.jucer.bak
+
+# Run artifacts (session logs saved into the repo folder + overnight watcher output)
+PinkNoiseLog_*/
+overnight_watch.log
