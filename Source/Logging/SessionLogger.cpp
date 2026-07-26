@@ -247,6 +247,7 @@ void SessionLogger::logEvent (const Event& e, const juce::String& description)
     row.add (juce::String (e.thresholdUsed, 3));
     row.add (juce::String (e.code));
     row.add (description);
+    row.add (juce::String());   // note — user-entered later via amendEventNote
 
     if (! eventWriter.writeRow (row) || eventWriter.hadWriteError())
         reportErrorOnce ("Failed writing to events.csv");
@@ -257,6 +258,50 @@ void SessionLogger::logEvent (const Event& e, const juce::String& description)
 
     if (eventWriter.hadWriteError())
         reportErrorOnce ("Failed flushing events.csv");
+}
+
+bool SessionLogger::rewriteEventsFile()
+{
+    eventWriter.close();
+
+    if (! eventWriter.open (eventsFilePath, getEventCsvHeader()))
+    {
+        reportErrorOnce ("Could not rewrite events.csv");
+        return false;
+    }
+
+    for (const auto& r : writtenEventRows)
+        eventWriter.writeRow (r);
+
+    eventWriter.flush();
+    return ! eventWriter.hadWriteError();
+}
+
+bool SessionLogger::amendEventNote (const Event& e, const juce::String& note)
+{
+    if (! active)
+        return false;
+
+    const auto elapsedText = formatSeconds (e.elapsedSeconds);
+    const auto typeText    = juce::String (toString (e.type));
+    const auto channelText = e.channelIndex >= 0
+                               ? channelName (activeInfo, e.channelIndex, e.channelIsInput)
+                               : juce::String (toString (e.channel));
+    const auto codeText    = juce::String (e.code);
+
+    for (auto it = writtenEventRows.rbegin(); it != writtenEventRows.rend(); ++it)
+    {
+        auto& row = *it;
+
+        if (row.size() >= 12 && row[1] == elapsedText && row[2] == typeText
+            && row[4] == channelText && row[9] == codeText)
+        {
+            row.set (11, note);
+            return rewriteEventsFile();
+        }
+    }
+
+    return false;
 }
 
 bool SessionLogger::amendEventDescription (double elapsedSeconds, EventType type,
@@ -275,24 +320,10 @@ bool SessionLogger::amendEventDescription (double elapsedSeconds, EventType type
     {
         auto& row = *it;
 
-        if (row.size() >= 11 && row[1] == elapsedText && row[2] == typeText)
+        if (row.size() >= 12 && row[1] == elapsedText && row[2] == typeText)
         {
-            row.set (row.size() - 1, newDescription);
-
-            // Rewrite the whole file: close, reopen with the header, replay.
-            eventWriter.close();
-
-            if (! eventWriter.open (eventsFilePath, getEventCsvHeader()))
-            {
-                reportErrorOnce ("Could not rewrite events.csv");
-                return false;
-            }
-
-            for (const auto& r : writtenEventRows)
-                eventWriter.writeRow (r);
-
-            eventWriter.flush();
-            return ! eventWriter.hadWriteError();
+            row.set (10, newDescription);   // column 10 = description, 11 = note
+            return rewriteEventsFile();
         }
     }
 
@@ -447,7 +478,7 @@ juce::StringArray SessionLogger::getEventCsvHeader()
 {
     return { "timestamp_utc", "elapsed_s", "event_type", "severity", "channel",
              "measured_value", "expected_value", "difference", "threshold_used",
-             "code", "description" };
+             "code", "description", "note" };
 }
 
 //==============================================================================

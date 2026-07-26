@@ -44,7 +44,9 @@
       events.csv columns:
         timestamp_utc, elapsed_s, event_type, severity, channel,
         measured_value, expected_value, difference, threshold_used,
-        code, description
+        code, description, note
+      (note is user-entered after the fact — "changing patch cable here" — and
+      is filled in by amendEventNote rewriting the file)
 
       timestamp_utc is derived on the message thread as
       SessionInfo::startTimeUtc + record.elapsedSeconds, ISO 8601
@@ -122,6 +124,12 @@ public:
     bool amendEventDescription (double elapsedSeconds, EventType type,
                                 const juce::String& newDescription);
 
+    /** Sets the note column of an already-written event row and rewrites the
+        file. The full Event identifies the row: three inputs can fault in the
+        same block, so elapsed+type alone is ambiguous — channel and code
+        complete the match. @returns false if no row matches. MESSAGE THREAD. */
+    bool amendEventNote (const Event& e, const juce::String& note);
+
     //==========================================================================
     /** Builds the standard human-readable description for an event, e.g.
         "Dropout ended after 2.35 s (input -78.2 dB, expected -21.0 dB)".
@@ -163,6 +171,10 @@ private:
     juce::String makeTimestampUtc (double elapsedSeconds) const;
 
     void reportErrorOnce (const juce::String& message);
+
+    /** Close, reopen with header, replay writtenEventRows. Shared by the two
+        amend methods. */
+    bool rewriteEventsFile();
 
     CsvWriter   measurementWriter;
     CsvWriter   eventWriter;

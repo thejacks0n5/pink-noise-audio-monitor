@@ -190,6 +190,7 @@ EventLogComponent::EventLogComponent()
     table.getHeader().addColumn ("Expected", colExpected,    80);
     table.getHeader().addColumn ("Diff",     colDifference,  70);
     table.getHeader().addColumn ("Description", colDescription, 280);
+    table.getHeader().addColumn ("Note",     colNote,        160);
     table.setHeaderHeight (22);
     table.setRowHeight (20);
     table.getHeader().setStretchToFitActive (true);
@@ -219,7 +220,7 @@ void EventLogComponent::addEvent (const Event& event, const juce::String& descri
     repaint();
 }
 
-void EventLogComponent::cellDoubleClicked (int rowNumber, int, const juce::MouseEvent&)
+void EventLogComponent::cellDoubleClicked (int rowNumber, int columnId, const juce::MouseEvent&)
 {
     if (! juce::isPositiveAndBelow (rowNumber, (int) visibleRows.size()))
         return;
@@ -230,31 +231,46 @@ void EventLogComponent::cellDoubleClicked (int rowNumber, int, const juce::Mouse
 
     const auto& row = rows[storageIndex];
 
-    // Only manual markers are user-authored text; detector events keep their
-    // generated descriptions.
-    if (row.event.type != EventType::ManualMarker)
-        return;
-
-    // Identify the marker by value: rows can shift (oldest dropped) while the
+    // Identify the event by value: rows can shift (oldest dropped) while the
     // editor is open, so an index captured now could point at the wrong row by
-    // the time the user hits return.
-    const Event markerCopy = row.event;
+    // the time the user hits return. Matching needs channel + code too — three
+    // inputs can drop out in the same block, sharing elapsed time and type.
+    const Event eventCopy = row.event;
 
-    auto editor = std::make_unique<MarkerNameEditor> (row.description,
-        [this, markerCopy] (const juce::String& newName)
+    const auto matches = [eventCopy] (const Event& e)
+    {
+        return e.type == eventCopy.type
+            && e.channelIndex == eventCopy.channelIndex
+            && e.code == eventCopy.code
+            && juce::approximatelyEqual (e.elapsedSeconds, eventCopy.elapsedSeconds);
+    };
+
+    // Double-clicking a marker's Description renames the marker itself; any
+    // other double-click, on any event, edits its user note ("I was swapping
+    // the cable at this point").
+    const bool renamingMarker = row.event.type == EventType::ManualMarker
+                              && columnId == colDescription;
+
+    auto editor = std::make_unique<MarkerNameEditor> (
+        renamingMarker ? row.description : row.note,
+        [this, matches, eventCopy, renamingMarker] (const juce::String& text)
         {
             for (auto& r : rows)
-                if (r.event.type == EventType::ManualMarker
-                    && juce::approximatelyEqual (r.event.elapsedSeconds, markerCopy.elapsedSeconds))
+                if (matches (r.event))
                 {
-                    r.description = newName;
+                    (renamingMarker ? r.description : r.note) = text;
                     break;
                 }
 
             table.repaint();
 
-            if (onMarkerRenamed != nullptr)
-                onMarkerRenamed (markerCopy, newName);
+            if (renamingMarker)
+            {
+                if (onMarkerRenamed != nullptr)
+                    onMarkerRenamed (eventCopy, text);
+            }
+            else if (onNoteEdited != nullptr)
+                onNoteEdited (eventCopy, text);
         });
 
     const auto rowBounds = table.getRowPosition (rowNumber, true);
@@ -474,6 +490,7 @@ void EventLogComponent::paintCell (juce::Graphics& g, int rowNumber, int columnI
         case colDifference: text = formatNumber (event.difference); useMono = true;
                             justification = juce::Justification::centredRight; break;
         case colDescription: text = row.description; break;
+        case colNote:        text = row.note; break;
         default: break;
     }
 

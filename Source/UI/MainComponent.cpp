@@ -452,6 +452,14 @@ MainComponent::MainComponent()
             sessionLogger.amendEventDescription (marker.elapsedSeconds, marker.type, newName);
     };
 
+    // Notes work on every event — "changing the patch cable here" next to a
+    // dropout tells future-you it wasn't a real fault.
+    eventLog.onNoteEdited = [this] (const Event& e, const juce::String& note)
+    {
+        if (sessionLogger.isSessionActive())
+            sessionLogger.amendEventNote (e, note);
+    };
+
     // Restore the last output level so an overnight rig comes back at the level
     // it was calibrated to, not the default.
     {

@@ -48,7 +48,8 @@ public:
         colMeasured,        ///< measuredValue (duration s for end events)
         colExpected,        ///< expectedValue
         colDifference,      ///< difference
-        colDescription      ///< composed description text (stretches)
+        colDescription,     ///< composed description text (stretches)
+        colNote             ///< user-entered annotation (editable, all events)
     };
 
     static constexpr int defaultMaxStoredEvents = 5000;
@@ -75,6 +76,10 @@ public:
         Event identifies the marker (elapsedSeconds + type); MainComponent
         forwards the new name into the session CSV. MESSAGE THREAD. */
     std::function<void (const Event&, const juce::String& newName)> onMarkerRenamed;
+
+    /** Fired when the user edits any event's note (double-click the row).
+        MainComponent forwards the note into the session CSV. MESSAGE THREAD. */
+    std::function<void (const Event&, const juce::String& note)> onNoteEdited;
 
     /** User channel names, used to render the Ch column so it matches the CSV.
         Index = channel index; missing entries fall back to "In n"/"Out n". */
@@ -136,6 +141,7 @@ private:
         Event event;
         juce::String description;
         juce::String timestampText;   // pre-formatted HH:MM:SS.mmm ("" if none)
+        juce::String note;            // user annotation, editable after the fact
     };
 
     void rebuildFilteredIndex();      // recompute visibleRows after filter edits
