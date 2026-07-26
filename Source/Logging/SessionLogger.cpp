@@ -69,6 +69,9 @@ bool SessionLogger::startSession (const juce::File& baseFolder, const SessionInf
         return false;
     }
 
+    writtenEventRows.clear();
+    eventsFilePath = eventsFile;
+
     if (! eventWriter.open (eventsFile, getEventCsvHeader()))
     {
         reportErrorOnce ("Could not open events.csv for writing.");
@@ -247,11 +250,53 @@ void SessionLogger::logEvent (const Event& e, const juce::String& description)
 
     if (! eventWriter.writeRow (row) || eventWriter.hadWriteError())
         reportErrorOnce ("Failed writing to events.csv");
+    else
+        writtenEventRows.push_back (row);
 
     eventWriter.flush();
 
     if (eventWriter.hadWriteError())
         reportErrorOnce ("Failed flushing events.csv");
+}
+
+bool SessionLogger::amendEventDescription (double elapsedSeconds, EventType type,
+                                           const juce::String& newDescription)
+{
+    if (! active)
+        return false;
+
+    // Rows carry elapsed as formatSeconds(3 decimals); compare the same way so
+    // float noise cannot miss the match. Search newest-first: if two markers
+    // somehow share a timestamp, the later one is the one just edited.
+    const auto elapsedText = formatSeconds (elapsedSeconds);
+    const auto typeText    = juce::String (toString (type));
+
+    for (auto it = writtenEventRows.rbegin(); it != writtenEventRows.rend(); ++it)
+    {
+        auto& row = *it;
+
+        if (row.size() >= 11 && row[1] == elapsedText && row[2] == typeText)
+        {
+            row.set (row.size() - 1, newDescription);
+
+            // Rewrite the whole file: close, reopen with the header, replay.
+            eventWriter.close();
+
+            if (! eventWriter.open (eventsFilePath, getEventCsvHeader()))
+            {
+                reportErrorOnce ("Could not rewrite events.csv");
+                return false;
+            }
+
+            for (const auto& r : writtenEventRows)
+                eventWriter.writeRow (r);
+
+            eventWriter.flush();
+            return ! eventWriter.hadWriteError();
+        }
+    }
+
+    return false;
 }
 
 //==============================================================================

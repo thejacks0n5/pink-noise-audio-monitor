@@ -59,6 +59,7 @@
 */
 
 #include <functional>
+#include <vector>
 #include <juce_core/juce_core.h>
 
 #include "../Model/DataModel.h"
@@ -113,6 +114,14 @@ public:
                             composeDescription(); quoted/escaped by CsvWriter. */
     void logEvent (const Event& e, const juce::String& description);
 
+    /** Replaces the description of an already-written event (used to name a
+        manual marker after the fact) and rewrites events.csv so the file
+        carries the final name in a single clean row. Matches on elapsed time
+        and type; @returns false if no such row exists or the session is over.
+        MESSAGE THREAD; the file is small, so the rewrite is cheap. */
+    bool amendEventDescription (double elapsedSeconds, EventType type,
+                                const juce::String& newDescription);
+
     //==========================================================================
     /** Builds the standard human-readable description for an event, e.g.
         "Dropout ended after 2.35 s (input -78.2 dB, expected -21.0 dB)".
@@ -157,6 +166,12 @@ private:
 
     CsvWriter   measurementWriter;
     CsvWriter   eventWriter;
+
+    // Every events.csv row written this session, kept so a row can be amended
+    // and the file rewritten. Events are rare (two per fault), so this stays
+    // tiny even overnight.
+    std::vector<juce::StringArray> writtenEventRows;
+    juce::File  eventsFilePath;
     SessionInfo activeInfo;
     bool        active { false };
     double      flushIntervalSeconds { 5.0 };

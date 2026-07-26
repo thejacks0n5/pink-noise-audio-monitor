@@ -444,6 +444,14 @@ MainComponent::MainComponent()
 
     waveform.onLaneConfigChanged = [this] { saveWaveformConfig(); };
 
+    // Renaming a marker updates the live log immediately; push the new name
+    // into events.csv too while the session is still open.
+    eventLog.onMarkerRenamed = [this] (const Event& marker, const juce::String& newName)
+    {
+        if (sessionLogger.isSessionActive())
+            sessionLogger.amendEventDescription (marker.elapsedSeconds, marker.type, newName);
+    };
+
     // Restore the last output level so an overnight rig comes back at the level
     // it was calibrated to, not the default.
     {
@@ -765,6 +773,7 @@ void MainComponent::startLogging()
         return;
     }
 
+    markerCounter = 0;
     currentSessionInfo = buildSessionInfo();
 
     if (sessionLogger.startSession (getLogBaseFolder(), currentSessionInfo))
@@ -836,7 +845,7 @@ void MainComponent::addManualMarker()
     e.elapsedSeconds = engine->getAnalysis().getElapsedSeconds();
     e.code           = eventCodeInstant;
 
-    const auto description = SessionLogger::composeDescription (e);
+    const auto description = "Marker " + juce::String (++markerCounter);
     const auto wallClockUtc = sessionStartUtc + juce::RelativeTime (e.elapsedSeconds);
 
     // Injected directly (message thread), never through the audio-thread FIFO.

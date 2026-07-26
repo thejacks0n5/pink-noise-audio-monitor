@@ -21,6 +21,49 @@ namespace
         return juce::String (elapsedSeconds, 3);
     }
 
+    /** Tiny CallOutBox content: one TextEditor for naming a marker. */
+    class MarkerNameEditor : public juce::Component
+    {
+    public:
+        MarkerNameEditor (const juce::String& initialText,
+                          std::function<void (const juce::String&)> commitFn)
+            : onCommit (std::move (commitFn))
+        {
+            editor.setText (initialText, juce::dontSendNotification);
+            editor.setSelectAllWhenFocused (true);
+
+            editor.onReturnKey = [this]
+            {
+                if (onCommit != nullptr && editor.getText().trim().isNotEmpty())
+                    onCommit (editor.getText().trim());
+
+                dismiss();
+            };
+            editor.onEscapeKey = [this] { dismiss(); };
+            editor.onFocusLost = [this] { dismiss(); };
+
+            addAndMakeVisible (editor);
+            setSize (260, 30);
+        }
+
+        void resized() override            { editor.setBounds (getLocalBounds().reduced (3)); }
+        void parentHierarchyChanged() override
+        {
+            if (isShowing())
+                editor.grabKeyboardFocus();
+        }
+
+    private:
+        void dismiss()
+        {
+            if (auto* box = findParentComponentOfClass<juce::CallOutBox>())
+                box->dismiss();
+        }
+
+        juce::TextEditor editor;
+        std::function<void (const juce::String&)> onCommit;
+    };
+
     juce::String formatTimestamp (juce::Time t)
     {
         if (t == juce::Time())
@@ -174,6 +217,50 @@ void EventLogComponent::addEvent (const Event& event, const juce::String& descri
         table.scrollToEnsureRowIsOnscreen ((int) visibleRows.size() - 1);
 
     repaint();
+}
+
+void EventLogComponent::cellDoubleClicked (int rowNumber, int, const juce::MouseEvent&)
+{
+    if (! juce::isPositiveAndBelow (rowNumber, (int) visibleRows.size()))
+        return;
+
+    const auto storageIndex = (size_t) visibleRows[(size_t) rowNumber];
+    if (storageIndex >= rows.size())
+        return;
+
+    const auto& row = rows[storageIndex];
+
+    // Only manual markers are user-authored text; detector events keep their
+    // generated descriptions.
+    if (row.event.type != EventType::ManualMarker)
+        return;
+
+    // Identify the marker by value: rows can shift (oldest dropped) while the
+    // editor is open, so an index captured now could point at the wrong row by
+    // the time the user hits return.
+    const Event markerCopy = row.event;
+
+    auto editor = std::make_unique<MarkerNameEditor> (row.description,
+        [this, markerCopy] (const juce::String& newName)
+        {
+            for (auto& r : rows)
+                if (r.event.type == EventType::ManualMarker
+                    && juce::approximatelyEqual (r.event.elapsedSeconds, markerCopy.elapsedSeconds))
+                {
+                    r.description = newName;
+                    break;
+                }
+
+            table.repaint();
+
+            if (onMarkerRenamed != nullptr)
+                onMarkerRenamed (markerCopy, newName);
+        });
+
+    const auto rowBounds = table.getRowPosition (rowNumber, true);
+    juce::CallOutBox::launchAsynchronously (std::move (editor),
+                                            table.localAreaToGlobal (rowBounds),
+                                            nullptr);
 }
 
 void EventLogComponent::setChannelNames (const juce::StringArray& outputNames,

@@ -311,6 +311,7 @@ private:
     // Session / UI state (message thread only)
     SessionInfo currentSessionInfo;          // valid while logging or exportable
     bool  loggingPaused        = false;
+    int   markerCounter        = 0;          // "Marker N" labels, reset per session
     bool  sessionAvailable     = false;      // a session folder exists to export
     juce::Time sessionStartUtc;              // for event wall-clock timestamps
 

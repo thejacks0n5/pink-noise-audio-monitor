@@ -71,6 +71,11 @@ public:
     /** Removes all rows (Reset Session / user pressed Clear). */
     void clear();
 
+    /** Fired when the user renames a manual marker (double-click its row). The
+        Event identifies the marker (elapsedSeconds + type); MainComponent
+        forwards the new name into the session CSV. MESSAGE THREAD. */
+    std::function<void (const Event&, const juce::String& newName)> onMarkerRenamed;
+
     /** User channel names, used to render the Ch column so it matches the CSV.
         Index = channel index; missing entries fall back to "In n"/"Out n". */
     void setChannelNames (const juce::StringArray& outputNames,
@@ -134,6 +139,7 @@ private:
     };
 
     void rebuildFilteredIndex();      // recompute visibleRows after filter edits
+    void cellDoubleClicked (int rowNumber, int columnId, const juce::MouseEvent&) override;
     bool passesFilter (const Row&) const noexcept;
     void dropOldestIfNeeded();
 
