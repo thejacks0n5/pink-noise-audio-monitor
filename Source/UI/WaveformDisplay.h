@@ -37,13 +37,21 @@ class WaveformDisplay : public juce::Component
 {
 public:
     //==========================================================================
-    enum class Trace : int
+    /** Maximum stacked lanes. Showing every channel of a large interface at
+        once would make each trace unreadably short, so the display shows a
+        chosen few and each lane picks which channel it draws. */
+    static constexpr int maxLanes = 8;
+
+    /** Lane counts offered in the UI. */
+    static constexpr int laneCountOptions[] = { 1, 2, 4, 8 };
+
+    /** What a lane is currently drawing. */
+    struct LaneSource
     {
-        reference = 0,   ///< generated pink-noise reference (post-gain)
-        inputL    = 1,   ///< returned input, left / mono
-        inputR    = 2    ///< returned input, right (hidden in mono sessions)
+        bool isInput = false;   ///< false = output (reference) channel
+        int  channel = 0;
+        bool active  = false;   ///< false = lane shows nothing ("Off")
     };
-    static constexpr int numTraces = 3;
 
     enum class AmplitudeScale
     {
@@ -77,19 +85,29 @@ public:
     void setDbFloor (float newFloorDb);
 
     //==========================================================================
-    // Trace visibility
-    void setTraceVisible (Trace trace, bool shouldBeVisible);
-    bool isTraceVisible (Trace trace) const noexcept;
 
-    /** Convenience for session start: mono hides inputR, stereo shows it. */
+    /** Retained for callers; lanes now decide what they draw. */
     void setNumInputChannels (int numChannels);
+
+    /** How many stacked lanes to draw (clamped to maxLanes). */
+    void setNumLanes (int numLanes);
+    int  getNumLanes() const noexcept { return numLanes; }
+
+    /** Channel names offered by each lane's selector. Call whenever the device
+        or the user's channel names change. */
+    void setAvailableChannels (const juce::StringArray& outputNames,
+                               const juce::StringArray& inputNames);
+
+    /** What lane n is currently drawing, so the owner knows which samples to
+        push into it. */
+    LaneSource getLaneSource (int lane) const noexcept;
 
     //==========================================================================
     // Data input (message thread, called from MainComponent::timerCallback)
     /** Appends numSamples raw samples for one trace. Samples are decimated
         into min/max pixel columns on the spot; the raw pointer is not
         retained. Ignored while frozen. */
-    void pushSamples (Trace trace, const float* samples, int numSamples);
+    void pushSamples (int lane, const float* samples, int numSamples);
 
     /** Clears all trace history (session reset / device change). */
     void clear();
@@ -137,7 +155,9 @@ private:
     };
 
     void rebuildRings();                 // on resize / rate / window change
-    juce::Colour colourForTrace (Trace) const noexcept;
+    juce::Colour colourForLane (int lane) const noexcept;
+    void rebuildLaneSelectors();         // repopulate the per-lane combo boxes
+    juce::Rectangle<int> laneBounds (int lane) const;
 
     double sampleRate        = 48000.0;
     double timeWindowSeconds = defaultTimeWindowSeconds;
@@ -147,7 +167,12 @@ private:
     bool   frozen            = false;
     bool   dirty             = false;    // set by pushSamples, cleared by paint
 
-    TraceRing rings[numTraces];
+    TraceRing rings[maxLanes];
+    LaneSource laneSources[maxLanes];
+    int numLanes = 2;
+
+    juce::StringArray availableOutputNames, availableInputNames;
+    juce::OwnedArray<juce::ComboBox> laneSelectors;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformDisplay)
 };

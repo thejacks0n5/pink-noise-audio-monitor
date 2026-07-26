@@ -158,6 +158,7 @@ private:
     float shownHoldDb[maxChannels];
     bool  clipLit[maxChannels] {};
     juce::StringArray channelNames;
+    juce::Rectangle<int> nameArea;   // strip under the bars for channel names
     juce::int64 lastRefreshMs = 0;           // for release ballistics
 
     juce::Rectangle<int> barArea, readoutArea, clipArea, titleArea;

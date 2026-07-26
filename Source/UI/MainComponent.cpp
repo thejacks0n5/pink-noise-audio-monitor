@@ -497,11 +497,25 @@ void MainComponent::resized()
     area.removeFromBottom (8);
     eventLog.setBounds (eventLogArea);
 
-    auto meterColumn = area.removeFromLeft (200);
+    // The meter column grows with the channel count: at four bars a side the old
+    // fixed 200 px left each bar a few pixels wide, which made the per-channel
+    // names unreadable. Width is capped so the waveform keeps most of the window.
+    const int refBars   = juce::jmax (1, refMeter.getNumChannels());
+    const int inputBars = juce::jmax (1, inputMeter.getNumChannels());
+    const int perBar    = 26;
+
+    const int wantedWidth = 60 + perBar * (refBars + inputBars);
+    const int meterWidth  = juce::jlimit (200, juce::jmax (200, area.getWidth() / 2), wantedWidth);
+
+    auto meterColumn = area.removeFromLeft (meterWidth);
     area.removeFromLeft (8);
     waveform.setBounds (area);
 
-    auto refBounds = meterColumn.removeFromLeft (meterColumn.getWidth() / 2);
+    // Split the column in proportion to how many bars each meter has to draw.
+    const int refWidth = juce::roundToInt ((float) (meterColumn.getWidth() - 4)
+                                             * (float) refBars / (float) (refBars + inputBars));
+
+    auto refBounds = meterColumn.removeFromLeft (juce::jmax (60, refWidth));
     meterColumn.removeFromLeft (4);
     refMeter.setBounds (refBounds);
     inputMeter.setBounds (meterColumn);
@@ -576,16 +590,20 @@ void MainComponent::updateMetersAndWaveform()
         const int samplesToRead = juce::jlimit (1, (int) waveformScratch.size(),
                                                 (int) juce::roundToInt (sr / 30.0));
 
-        engine->readReferenceWaveform (waveformScratch.data(), samplesToRead);
-        waveform.pushSamples (WaveformDisplay::Trace::reference, waveformScratch.data(), samplesToRead);
-
-        engine->readInputWaveform (0, waveformScratch.data(), samplesToRead);
-        waveform.pushSamples (WaveformDisplay::Trace::inputL, waveformScratch.data(), samplesToRead);
-
-        if (engine->getNumInputChannels() >= 2)
+        // Feed each lane whichever channel it is currently set to show.
+        for (int lane = 0; lane < waveform.getNumLanes(); ++lane)
         {
-            engine->readInputWaveform (1, waveformScratch.data(), samplesToRead);
-            waveform.pushSamples (WaveformDisplay::Trace::inputR, waveformScratch.data(), samplesToRead);
+            const auto src = waveform.getLaneSource (lane);
+
+            if (! src.active)
+                continue;
+
+            if (src.isInput)
+                engine->readInputWaveform (src.channel, waveformScratch.data(), samplesToRead);
+            else
+                engine->readReferenceWaveform (src.channel, waveformScratch.data(), samplesToRead);
+
+            waveform.pushSamples (lane, waveformScratch.data(), samplesToRead);
         }
     }
 
@@ -1302,6 +1320,9 @@ void MainComponent::refreshChannelConfig()
         engine->getAnalysis().setReferenceOutputForInput (i, referenceOutputForInput[i]);
         engine->getAnalysis().setInputMonitored (i, inputMonitored[i]);
     }
+
+    // Lane selectors offer every channel by its user-facing name.
+    waveform.setAvailableChannels (outputChannelNames, inputChannelNames);
 
     refMeter.setNumChannels (juce::jmax (1, outs));
     refMeter.setChannelNames (outputChannelNames);

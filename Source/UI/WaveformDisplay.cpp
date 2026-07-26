@@ -15,8 +15,14 @@ namespace pnam
 //==============================================================================
 WaveformDisplay::WaveformDisplay()
 {
-    rings[(int) Trace::inputR].visible = false; // hidden until stereo confirmed
     setWantsKeyboardFocus (false);
+
+    // Sensible default: lane 0 watches the first output (the reference), lane 1
+    // the first input, so a plain loopback shows send vs return out of the box.
+    laneSources[0] = { false, 0, true };
+    laneSources[1] = { true,  0, true };
+
+    rebuildLaneSelectors();
     rebuildRings();
 }
 
@@ -58,33 +64,119 @@ void WaveformDisplay::setDbFloor (float newFloorDb)
 }
 
 //==============================================================================
-void WaveformDisplay::setTraceVisible (Trace trace, bool shouldBeVisible)
+void WaveformDisplay::setNumInputChannels (int)
 {
-    auto& ring = rings[(int) trace];
-    if (ring.visible != shouldBeVisible)
+    // Lanes decide what they draw; nothing to do here any more.
+}
+
+void WaveformDisplay::setNumLanes (int newNumLanes)
+{
+    newNumLanes = juce::jlimit (1, maxLanes, newNumLanes);
+
+    if (numLanes == newNumLanes)
+        return;
+
+    numLanes = newNumLanes;
+    rebuildLaneSelectors();
+    resized();
+    dirty = true;
+    repaint();
+}
+
+void WaveformDisplay::setAvailableChannels (const juce::StringArray& outputNames,
+                                            const juce::StringArray& inputNames)
+{
+    if (availableOutputNames == outputNames && availableInputNames == inputNames)
+        return;
+
+    availableOutputNames = outputNames;
+    availableInputNames  = inputNames;
+
+    // Drop any lane pointing at a channel the new device no longer has.
+    for (auto& src : laneSources)
     {
-        ring.visible = shouldBeVisible;
-        dirty = true;
+        const int limit = src.isInput ? availableInputNames.size() : availableOutputNames.size();
+        if (src.active && src.channel >= limit)
+            src.active = false;
     }
+
+    rebuildLaneSelectors();
+    dirty = true;
 }
 
-bool WaveformDisplay::isTraceVisible (Trace trace) const noexcept
+WaveformDisplay::LaneSource WaveformDisplay::getLaneSource (int lane) const noexcept
 {
-    return rings[(int) trace].visible;
+    if (! juce::isPositiveAndBelow (lane, maxLanes))
+        return {};
+
+    return laneSources[lane];
 }
 
-void WaveformDisplay::setNumInputChannels (int numChannels)
+void WaveformDisplay::rebuildLaneSelectors()
 {
-    setTraceVisible (Trace::inputR, numChannels >= 2);
+    laneSelectors.clear();
+
+    for (int lane = 0; lane < numLanes; ++lane)
+    {
+        auto* box = laneSelectors.add (new juce::ComboBox());
+
+        // IDs: 1 = Off, 2..(1+outs) = outputs, then inputs.
+        box->addItem ("Off", 1);
+
+        for (int ch = 0; ch < availableOutputNames.size(); ++ch)
+            box->addItem (availableOutputNames[ch], 2 + ch);
+
+        for (int ch = 0; ch < availableInputNames.size(); ++ch)
+            box->addItem (availableInputNames[ch], 2 + availableOutputNames.size() + ch);
+
+        const auto& src = laneSources[lane];
+        int id = 1;
+        if (src.active)
+            id = src.isInput ? 2 + availableOutputNames.size() + src.channel
+                             : 2 + src.channel;
+
+        box->setSelectedId (id, juce::dontSendNotification);
+
+        box->onChange = [this, lane, box]
+        {
+            const int chosen = box->getSelectedId();
+            auto& target = laneSources[lane];
+
+            if (chosen <= 1)
+            {
+                target.active = false;
+            }
+            else
+            {
+                const int index = chosen - 2;
+                target.isInput = index >= availableOutputNames.size();
+                target.channel = target.isInput ? index - availableOutputNames.size() : index;
+                target.active  = true;
+            }
+
+            // Old content belongs to a different signal — don't let it linger.
+            auto& ring = rings[lane];
+            std::fill (ring.columns.begin(), ring.columns.end(), MinMax { 0.0f, 0.0f });
+            ring.writeIndex = ring.columnsFilled = ring.accumCount = 0;
+
+            dirty = true;
+            repaint();
+        };
+
+        addAndMakeVisible (box);
+    }
+
+    resized();
 }
 
 //==============================================================================
-void WaveformDisplay::pushSamples (Trace trace, const float* samples, int numSamplesIn)
+void WaveformDisplay::pushSamples (int lane, const float* samples, int numSamplesIn)
 {
-    if (frozen || samples == nullptr || numSamplesIn <= 0)
+    if (frozen || samples == nullptr || numSamplesIn <= 0
+        || ! juce::isPositiveAndBelow (lane, maxLanes))
         return;
 
-    auto& ring = rings[(int) trace];
+    auto& ring = rings[lane];
     if (ring.columns.empty())
         return;
 
@@ -179,15 +271,25 @@ void WaveformDisplay::rebuildRings()
     dirty = true;
 }
 
-juce::Colour WaveformDisplay::colourForTrace (Trace trace) const noexcept
+juce::Colour WaveformDisplay::colourForLane (int lane) const noexcept
 {
-    switch (trace)
-    {
-        case Trace::reference: return Palette::get (Palette::traceReference);
-        case Trace::inputL:    return Palette::get (Palette::traceInputL);
-        case Trace::inputR:    return Palette::get (Palette::traceInputR);
-        default:               return Palette::get (Palette::traceReference);
-    }
+    // Outputs keep the reference colour family, inputs the input family, so a
+    // send and its return stay visually distinct however lanes are arranged.
+    const auto& src = laneSources[juce::jlimit (0, maxLanes - 1, lane)];
+
+    const auto base = src.isInput ? Palette::get (Palette::traceInputL)
+                                  : Palette::get (Palette::traceReference);
+
+    // Shift the hue slightly per channel so several inputs remain tellable apart.
+    return base.withRotatedHue (0.045f * (float) src.channel);
+}
+
+juce::Rectangle<int> WaveformDisplay::laneBounds (int lane) const
+{
+    auto bounds = getLocalBounds();
+    const int laneHeight = juce::jmax (1, bounds.getHeight() / juce::jmax (1, numLanes));
+
+    return { bounds.getX(), bounds.getY() + lane * laneHeight, bounds.getWidth(), laneHeight };
 }
 
 //==============================================================================
@@ -195,32 +297,43 @@ void WaveformDisplay::paint (juce::Graphics& g)
 {
     g.fillAll (Palette::get (Palette::windowBackground));
 
-    auto bounds = getLocalBounds();
-    const int w = bounds.getWidth();
-    const int h = bounds.getHeight();
-    const float centreY = (float) h * 0.5f;
+    const int w = getWidth();
 
-    // Grid
-    g.setColour (Palette::get (Palette::traceGrid));
-    for (int i = 1; i < 4; ++i)
+    for (int lane = 0; lane < numLanes; ++lane)
     {
-        const float y = (float) h * (float) i / 4.0f;
-        g.drawHorizontalLine ((int) y, 0.0f, (float) w);
-    }
+        const auto band = laneBounds (lane);
+        const float centreY = (float) band.getCentreY();
 
-    // Centre line
-    g.setColour (Palette::get (Palette::traceCentreLine));
-    g.drawHorizontalLine ((int) centreY, 0.0f, (float) w);
+        // Lane separator
+        if (lane > 0)
+        {
+            g.setColour (Palette::get (Palette::outline));
+            g.drawHorizontalLine (band.getY(), 0.0f, (float) w);
+        }
 
-    for (int t = 0; t < numTraces; ++t)
-    {
-        const auto& ring = rings[(size_t) t];
-        if (! ring.visible || ring.columns.empty())
+        g.setColour (Palette::get (Palette::traceCentreLine));
+        g.drawHorizontalLine ((int) centreY, 0.0f, (float) w);
+
+        const auto& src = laneSources[lane];
+
+        if (! src.active)
+        {
+            g.setColour (Palette::get (Palette::textSecondary).withAlpha (0.5f));
+            g.setFont (juce::Font (juce::FontOptions (11.0f)));
+            g.drawFittedText ("(no channel selected)", band, juce::Justification::centred, 1);
+            continue;
+        }
+
+        const auto& ring = rings[lane];
+        if (ring.columns.empty() || ring.columnsFilled <= 0)
             continue;
 
         const int numCols = (int) ring.columns.size();
-        const int filled = ring.columnsFilled;
-        if (filled <= 0)
+        const int filled  = ring.columnsFilled;
+
+        // Half-height of this lane's trace, leaving room for the selector.
+        const float halfHeight = (float) band.getHeight() * 0.5f - 6.0f;
+        if (halfHeight <= 1.0f)
             continue;
 
         juce::Path minPath, maxPath;
@@ -228,8 +341,6 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
         for (int i = 0; i < filled; ++i)
         {
-            // Oldest-to-newest ordering across the ring, right-aligned so the
-            // newest column sits at the right edge of the component.
             const int idx = (ring.writeIndex - filled + i % numCols + numCols) % numCols;
             const int x = w - filled + i;
             if (x < 0 || x >= w)
@@ -241,8 +352,8 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
             if (amplitudeScale == AmplitudeScale::linear)
             {
-                yMin = centreY - mm.mn * centreY;
-                yMax = centreY - mm.mx * centreY;
+                yMin = centreY - mm.mn * halfHeight;
+                yMax = centreY - mm.mx * halfHeight;
             }
             else
             {
@@ -253,19 +364,13 @@ void WaveformDisplay::paint (juce::Graphics& g)
                     return juce::jlimit (dbFloor, 0.0f, db);
                 };
 
-                auto propFor = [this] (float db)
-                {
-                    return (db - dbFloor) / (0.0f - dbFloor);
-                };
+                auto propFor = [this] (float db) { return (db - dbFloor) / (0.0f - dbFloor); };
 
                 const float propMin = propFor (dbFor (mm.mn));
                 const float propMax = propFor (dbFor (mm.mx));
 
-                const float signMin = mm.mn < 0.0f ? -1.0f : 1.0f;
-                const float signMax = mm.mx < 0.0f ? -1.0f : 1.0f;
-
-                yMin = centreY - signMin * propMin * centreY;
-                yMax = centreY - signMax * propMax * centreY;
+                yMin = centreY - (mm.mn < 0.0f ? -1.0f : 1.0f) * propMin * halfHeight;
+                yMax = centreY - (mm.mx < 0.0f ? -1.0f : 1.0f) * propMax * halfHeight;
             }
 
             if (! started)
@@ -283,7 +388,7 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
         if (started)
         {
-            g.setColour (colourForTrace ((Trace) t));
+            g.setColour (colourForLane (lane));
             g.strokePath (maxPath, juce::PathStrokeType (1.0f));
             g.strokePath (minPath, juce::PathStrokeType (1.0f));
         }
@@ -293,18 +398,31 @@ void WaveformDisplay::paint (juce::Graphics& g)
     {
         g.setColour (Palette::get (Palette::severityWarning).withAlpha (0.85f));
         g.setFont (juce::Font (juce::FontOptions (12.0f)));
-        g.drawFittedText ("FROZEN", bounds.removeFromTop (18).removeFromRight (70),
+        g.drawFittedText ("FROZEN", getLocalBounds().removeFromTop (18).removeFromRight (70),
                           juce::Justification::centred, 1);
     }
 }
 
 void WaveformDisplay::resized()
 {
+    // Each lane's channel selector sits at the top-left of its own band, so the
+    // dropdown is unambiguously attached to the trace it controls.
+    for (int lane = 0; lane < laneSelectors.size(); ++lane)
+    {
+        const auto band = laneBounds (lane);
+        laneSelectors[lane]->setBounds (band.getX() + 6, band.getY() + 4,
+                                        juce::jmin (150, juce::jmax (90, band.getWidth() / 5)), 18);
+    }
+
     rebuildRings();
 }
 
-void WaveformDisplay::mouseDown (const juce::MouseEvent&)
+void WaveformDisplay::mouseDown (const juce::MouseEvent& e)
 {
+    // Clicks on a lane's selector belong to the selector, not to freeze.
+    if (e.eventComponent != this)
+        return;
+
     setFrozen (! frozen);
 }
 

@@ -117,7 +117,7 @@ public:
     //==========================================================================
     /** MESSAGE THREAD. Copies up to maxSamples of the most recent reference
         (generated) samples into dest. @returns the number of valid samples. */
-    int readReferenceWaveform (float* dest, int maxSamples);
+    int readReferenceWaveform (int channel, float* dest, int maxSamples);
 
     /** MESSAGE THREAD. Copies up to maxSamples of the most recent input
         samples (channel 0 = L, 1 = R) into dest. @returns valid sample count. */

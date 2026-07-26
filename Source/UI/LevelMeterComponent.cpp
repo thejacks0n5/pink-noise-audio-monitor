@@ -246,9 +246,9 @@ void LevelMeterComponent::paint (juce::Graphics& g)
                                        : juce::String (ch + 1);
 
                 g.setColour (Palette::get (Palette::textSecondary));
-                g.setFont (juce::Font (juce::FontOptions (8.5f)));
+                g.setFont (juce::Font (juce::FontOptions (9.0f)));
                 g.drawFittedText (label,
-                                  bar.getX() - 1, bar.getBottom() + 1, bar.getWidth() + 2, 10,
+                                  bar.getX() - 2, nameArea.getY(), bar.getWidth() + 4, nameArea.getHeight(),
                                   juce::Justification::centred, 1);
             }
 
@@ -326,6 +326,10 @@ void LevelMeterComponent::resized()
         readoutArea = bounds.removeFromBottom (14);
     else
         readoutArea = {};
+
+    // Reserve a strip under the bars for the per-channel name captions, so they
+    // are not drawn over the readout or clipped off the bottom.
+    nameArea = bounds.removeFromBottom (12);
 
     barArea = bounds;
 }

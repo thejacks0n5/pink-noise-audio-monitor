@@ -117,9 +117,9 @@ juce::String AudioEngine::getOutputDeviceName() const
 }
 
 //==============================================================================
-int AudioEngine::readReferenceWaveform (float* dest, int maxSamples)
+int AudioEngine::readReferenceWaveform (int channel, float* dest, int maxSamples)
 {
-    return referenceHistory.readLatest (dest, 0, maxSamples, 0);
+    return referenceHistory.readLatest (dest, channel, maxSamples, 0);
 }
 
 int AudioEngine::readInputWaveform (int channel, float* dest, int maxSamples)
