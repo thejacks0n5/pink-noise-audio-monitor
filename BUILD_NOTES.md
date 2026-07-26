@@ -260,3 +260,50 @@ relying on mid-session channel changes during a long run.
    overridden via Settings → "Choose Log Folder..." (persisted in
    `~/Library/Application Support/PinkNoiseAudioMonitor/PinkNoiseAudioMonitor.settings`
    via `juce::ApplicationProperties`).
+
+## 5. Overnight run checklist (second machine)
+
+Getting the build up on a fresh Mac:
+
+1. **Toolchain**: install CMake (`brew install cmake`) — it was missing on the
+   first machine too. If `cmake -B build -G Xcode` complains about the compiler,
+   the Xcode license needs accepting (`sudo xcodebuild -license accept`) or
+   build with `-G "Unix Makefiles"` against the Command Line Tools, which is how
+   every build so far was made.
+2. **Copy the repo WITHOUT `build/`** — it holds the multi-hundred-MB JUCE
+   clone and is fully regenerated. First configure on the new machine
+   re-fetches JUCE and needs network.
+3. **Settings do not travel.** Device selection, channel names, Monitor flags,
+   the log destination and lane layout live in
+   `~/Library/Application Support/PinkNoiseAudioMonitor/` on the old machine.
+   Reconfigure on the new one (different interface anyway).
+4. Grant the microphone permission on first launch or every input reads silence.
+
+Before walking away for the night:
+
+1. Audio Device Setup: pick the interface, set channel counts (OUT CH / IN CH
+   are independent in the status bar), name every channel, and **untick Monitor
+   on any input with nothing patched in** — a floating input sits below the
+   dropout threshold forever and, with noise playing, picks up crosstalk at
+   roughly −50 dBFS (measured ~33 dB isolation on a UMC404HD; see the mute test
+   in the session notes). Unmonitored inputs are excluded from
+   measurements.csv entirely.
+2. Set the log file (Logging menu, Cmd-Shift-L) — or enable "Ask for log name &
+   location at each session start" in Settings if per-run prompting is wanted.
+3. Start Audio (Cmd-R), confirm every REF OUT bar moves and each patched input
+   returns signal; Start Logging (Cmd-L); drop a marker (Cmd-Shift-M) and
+   double-click its row to name it — this also proves events.csv is writable.
+4. **Stop the machine sleeping.** Display sleep is fine; system sleep kills the
+   session. Either System Settings -> Energy -> prevent automatic sleeping, or
+   leave `caffeinate -s` running in a terminal.
+5. Desktop notifications only appear on a signed build with the notifications
+   entitlement (see section 3) — do not rely on them for the first run; the CSVs
+   and event log are the record.
+
+What a healthy morning log looks like: elapsed_s strictly increasing with no
+backwards jumps, one start/end pair per genuine fault (never a repeating
+started/ended stream), dropout_flag zero except during real faults, and
+measurements.csv columns only for the channels that were monitored. The first
+overnight target from the spec: no crash, no leak, flat memory, and graceful
+recovery if the device hiccups.
+
