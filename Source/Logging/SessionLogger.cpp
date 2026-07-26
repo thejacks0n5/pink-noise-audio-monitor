@@ -103,7 +103,9 @@ bool SessionLogger::startSession (const juce::File& baseFolder, const SessionInf
                              ? activeInfo.referenceOutputForInput[ch] : 0;
 
         text << "inputChannel" << (ch + 1) << ": " << channelName (activeInfo, ch, true)
-             << " (referenced to " << channelName (activeInfo, refOut, false) << ")\n";
+             << " (referenced to " << channelName (activeInfo, refOut, false) << ")"
+             << (isInputLogged (activeInfo, ch) ? "" : " [not monitored - excluded from measurements.csv]")
+             << "\n";
     }
 
     infoFile.replaceWithText (text);
@@ -192,6 +194,9 @@ void SessionLogger::logMeasurement (const Measurement& m)
 
     for (int ch = 0; ch < ins; ++ch)
     {
+        if (! isInputLogged (activeInfo, ch))
+            continue;
+
         const bool valid = ch < m.numInputChannels;
         row.add (valid ? formatDb (m.inPeakDb[ch])   : juce::String());
         row.add (valid ? formatDb (m.inRmsDb[ch])    : juce::String());
@@ -320,6 +325,14 @@ juce::String SessionLogger::channelName (const SessionInfo& info, int channelInd
     return (isInput ? "In " : "Out ") + juce::String (channelIndex + 1);
 }
 
+bool SessionLogger::isInputLogged (const SessionInfo& info, int channelIndex)
+{
+    // An unmonitored input is one the user told us has nothing patched in, so it
+    // is omitted from the CSV entirely rather than filling columns with noise.
+    return ! juce::isPositiveAndBelow (channelIndex, info.inputMonitored.size())
+        || info.inputMonitored[channelIndex];
+}
+
 juce::StringArray SessionLogger::getMeasurementCsvHeader (const SessionInfo& info)
 {
     // Column names are sanitised so a channel called "Booth, Left" cannot break
@@ -345,6 +358,9 @@ juce::StringArray SessionLogger::getMeasurementCsvHeader (const SessionInfo& inf
 
     for (int ch = 0; ch < ins; ++ch)
     {
+        if (! isInputLogged (info, ch))
+            continue;
+
         const auto n = columnise (channelName (info, ch, true));
         header.add (n + "_peak_db");
         header.add (n + "_rms_db");

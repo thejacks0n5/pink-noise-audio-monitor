@@ -35,8 +35,12 @@
     implementation; the queue also has its own drop counter).
 
     Checks are suppressed while BlockStats::statusCode has any of
-    outputMuted | fadingIn | fadingOut | settling | inputInactive set;
-    ongoing conditions are closed out (end event) when suppression begins.
+    outputMuted | fadingIn | fadingOut | settling | inputInactive set. Conditions
+    already ACTIVE are carried across the suppression window rather than closed
+    out: one unresolved fault stays one event until it genuinely clears, instead
+    of being re-reported after every device restart. Pending (unconfirmed)
+    conditions are discarded. Inputs whose BlockStats::inputMonitored is false
+    are skipped entirely.
   ==============================================================================
 */
 

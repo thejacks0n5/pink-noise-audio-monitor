@@ -167,75 +167,28 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
     // state, which will now be false).
     if (suppressed)
     {
-        // Close out every channel's in-flight condition, so a suppression
-        // window never leaves a start event without its matching end.
+        // Detection pauses, but conditions are deliberately NOT closed out.
+        //
+        // Closing them here meant every device restart (or any other suppression
+        // window) ended the current fault and immediately re-opened it, so a
+        // single unresolved problem was re-reported as a new critical error over
+        // and over. An ongoing fault must stay the SAME event until it actually
+        // clears, so active conditions are carried across the gap and their
+        // duration keeps running from the original start.
+        //
+        // Pending conditions are dropped: they never became events, and letting
+        // a half-formed one mature across a suppression gap would date it wrong.
         for (int ch = 0; ch < numCh; ++ch)
         {
-            if (dropoutState[ch].phase != ConditionState::Phase::inactive)
-            {
-                if (dropoutState[ch].phase == ConditionState::Phase::active)
-                {
-                    Event e;
-                    e.type          = EventType::CompleteDropout;
-                    e.severity      = Severity::Critical;
-                    e.channel       = ChannelId::Both;
-                    e.channelIndex  = ch;
-                    e.elapsedSeconds = now;
-                    e.measuredValue = now - dropoutState[ch].conditionStartSeconds;
-                    e.expectedValue = 0.0;
-                    e.difference    = e.measuredValue;
-                    e.thresholdUsed = t.dropoutThresholdDb;
-                    e.code          = eventCodeEnd;
-                    tryPush (e);
-                }
+            if (dropoutState[ch].phase == ConditionState::Phase::pending)
                 dropoutState[ch] = ConditionState{};
-            }
 
-            if (clippingState[ch].phase != ConditionState::Phase::inactive)
-            {
-                if (clippingState[ch].phase == ConditionState::Phase::active)
-                {
-                    Event e;
-                    e.type          = EventType::Clipping;
-                    e.severity      = (now - clippingState[ch].conditionStartSeconds) * 1000.0 >= t.criticalClipMs
-                                         ? Severity::Critical : Severity::Warning;
-                    e.channel       = ChannelId::Both;
-                    e.channelIndex  = ch;
-                    e.elapsedSeconds = now;
-                    e.measuredValue = now - clippingState[ch].conditionStartSeconds;
-                    e.expectedValue = 0.0;
-                    e.difference    = (double) clippingState[ch].accumulatedCount;
-                    e.thresholdUsed = t.clipThresholdLinear;
-                    e.code          = eventCodeEnd;
-                    tryPush (e);
-                }
+            if (clippingState[ch].phase == ConditionState::Phase::pending)
                 clippingState[ch] = ConditionState{};
-            }
 
-            if (levelChangeState[ch].phase != ConditionState::Phase::inactive)
-            {
-                if (levelChangeState[ch].phase == ConditionState::Phase::active)
-                {
-                    Event e;
-                    e.type          = EventType::LevelChange;
-                    e.severity      = Severity::Warning;
-                    e.channel       = ChannelId::Both;
-                    e.channelIndex  = ch;
-                    e.elapsedSeconds = now;
-                    e.measuredValue = now - levelChangeState[ch].conditionStartSeconds;
-                    e.expectedValue = 0.0;
-                    e.difference    = levelChangeState[ch].worstValue;
-                    e.thresholdUsed = t.levelChangeToleranceDb;
-                    e.code          = eventCodeEnd;
-                    tryPush (e);
-                }
+            if (levelChangeState[ch].phase == ConditionState::Phase::pending)
                 levelChangeState[ch] = ConditionState{};
-            }
-
         }
-
-        dropoutActiveAtomic.store (false, std::memory_order_relaxed);
-        clippingActiveAtomic.store (false, std::memory_order_relaxed);
 
         return false;
     }
@@ -256,6 +209,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
             levelChangeState[ch] = ConditionState{};
             continue;
         }
+
 
         const int refCh = juce::jlimit (0, juce::jmax (0, stats.numOutputChannels - 1),
                                         stats.referenceOutputForInput[ch]);

@@ -126,6 +126,11 @@ public:
     /** Safe channel-name lookup with an "Out n"/"In n" fallback. */
     static juce::String channelName (const SessionInfo&, int channelIndex, bool isInput);
 
+    /** Whether an input appears in measurements.csv at all. Unmonitored inputs
+        are omitted entirely — both header and rows consult this, so the two can
+        never disagree about the column layout. */
+    static bool isInputLogged (const SessionInfo&, int channelIndex);
+
     //==========================================================================
     /** Invoked (on the message thread) when a CSV write/flush fails after
         startSession succeeded. The app uses this to raise a LoggingError
