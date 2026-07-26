@@ -7,6 +7,10 @@
 
 #include "EventLogComponent.h"
 
+#if JUCE_MAC
+ #include <CoreFoundation/CoreFoundation.h>
+#endif
+
 namespace pnam
 {
 
@@ -21,6 +25,49 @@ namespace
     {
         if (t == juce::Time())
             return {};
+
+       #if JUCE_MAC
+        // Format with the user's own clock conventions. The ICU "j" skeleton is
+        // the documented hook for the System Settings 12/24-hour preference:
+        // it resolves to "h:mm:ss.SSS a" or "HH:mm:ss.SSS" per that setting and
+        // the locale — strftime("%H") would pin everyone to 24-hour.
+        // Message-thread only, so a lazily built shared formatter is safe.
+        static CFDateFormatterRef formatter = []() -> CFDateFormatterRef
+        {
+            CFLocaleRef locale = CFLocaleCopyCurrent();
+            auto* f = CFDateFormatterCreate (kCFAllocatorDefault, locale,
+                                             kCFDateFormatterNoStyle, kCFDateFormatterNoStyle);
+
+            if (f != nullptr)
+                if (CFStringRef pattern = CFDateFormatterCreateDateFormatFromTemplate (
+                        kCFAllocatorDefault, CFSTR ("jmmssSSS"), 0, locale))
+                {
+                    CFDateFormatterSetFormat (f, pattern);
+                    CFRelease (pattern);
+                }
+
+            CFRelease (locale);
+            return f;
+        }();
+
+        if (formatter != nullptr)
+        {
+            const auto absTime = (CFAbsoluteTime) ((double) t.toMilliseconds() / 1000.0)
+                                   - kCFAbsoluteTimeIntervalSince1970;
+
+            if (CFStringRef str = CFDateFormatterCreateStringWithAbsoluteTime (
+                    kCFAllocatorDefault, formatter, absTime))
+            {
+                char buffer[64] {};
+                const bool ok = CFStringGetCString (str, buffer, sizeof (buffer),
+                                                    kCFStringEncodingUTF8);
+                CFRelease (str);
+
+                if (ok)
+                    return juce::String::fromUTF8 (buffer);
+            }
+        }
+       #endif
 
         return t.formatted ("%H:%M:%S") + juce::String::formatted (".%03d",
                    (int) (t.toMilliseconds() % 1000));
@@ -91,7 +138,7 @@ EventLogComponent::EventLogComponent()
     countLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
 
     addAndMakeVisible (table);
-    table.getHeader().addColumn ("Time",     colTimestamp,   90);
+    table.getHeader().addColumn ("Time",     colTimestamp,   110);
     table.getHeader().addColumn ("Elapsed",  colElapsed,     70);
     table.getHeader().addColumn ("Type",     colType,        130);
     table.getHeader().addColumn ("Severity", colSeverity,    80);
