@@ -114,7 +114,9 @@ namespace
             heading.setJustificationType (juce::Justification::centredLeft);
 
             buildRows();
-            setSize (660, juce::jlimit (220, 640, 96 + 30 * (outputNames.size() + inputNames.size() + 2)));
+            // No upper clamp: the panel lives in a scrolling viewport, and
+            // clamping made channels past ~18 impossible to name or un-monitor.
+            setSize (660, juce::jmax (220, 96 + 30 * (outputNames.size() + inputNames.size() + 2)));
         }
 
         void resized() override
@@ -430,7 +432,6 @@ MainComponent::MainComponent()
     refMeter.onResetRequest   = [this] { engine->getAnalysis().resetPeakHold(); };
     inputMeter.onResetRequest = [this] { engine->getAnalysis().resetPeakHold(); };
 
-    waveform.setNumInputChannels (2);   // best-guess default; corrected in startAudio()
 
     statusBar.onCellClicked = [this] (TopStatusBar::CellId id, juce::Rectangle<int> cellBounds)
     {
@@ -462,9 +463,6 @@ MainComponent::~MainComponent()
 
     if (deviceSetupWindow != nullptr)
         deviceSetupWindow.deleteAndZero();
-
-    if (channelSetupWindow != nullptr)
-        channelSetupWindow.deleteAndZero();
 
     // Stops logging (if active) and the audio engine (fades out first).
     stopAudio();
@@ -539,14 +537,12 @@ void MainComponent::drainMeasurementQueue()
 {
     measurementQueue.popAll ([this] (const Measurement& m)
     {
+        // Measurement now carries a per-channel breakdown, so light exactly the
+        // channels that actually clipped rather than the first two.
         if (m.clipCountBlock > 0)
-        {
-            // Measurement carries an aggregate clip count only (no per-channel
-            // breakdown), so light both channel indicators — the user clears
-            // them via the meter's clip latch.
-            inputMeter.notifyClipped (0);
-            inputMeter.notifyClipped (1);
-        }
+            for (int ch = 0; ch < juce::jlimit (0, maxChannels, m.numInputChannels); ++ch)
+                if (m.clipCountPerChannel[ch] > 0)
+                    inputMeter.notifyClipped (ch);
 
         if (sessionLogger.isSessionActive() && ! loggingPaused)
             sessionLogger.logMeasurement (m);
@@ -564,10 +560,9 @@ void MainComponent::drainEventQueue()
 
         if (e.type == EventType::Clipping && e.code == eventCodeStart)
         {
-            if (e.channel == ChannelId::Left || e.channel == ChannelId::Both)
-                inputMeter.notifyClipped (0);
-            if (e.channel == ChannelId::Right || e.channel == ChannelId::Both)
-                inputMeter.notifyClipped (1);
+            // channelIndex is authoritative; `channel` is always Both now.
+            if (e.channelIndex >= 0 && e.channelIsInput)
+                inputMeter.notifyClipped (e.channelIndex);
         }
 
         if (sessionLogger.isSessionActive() && ! loggingPaused)
@@ -598,12 +593,14 @@ void MainComponent::updateMetersAndWaveform()
             if (! src.active)
                 continue;
 
-            if (src.isInput)
-                engine->readInputWaveform (src.channel, waveformScratch.data(), samplesToRead);
-            else
-                engine->readReferenceWaveform (src.channel, waveformScratch.data(), samplesToRead);
+            const int got = src.isInput
+                              ? engine->readInputWaveform (src.channel, waveformScratch.data(), samplesToRead)
+                              : engine->readReferenceWaveform (src.channel, waveformScratch.data(), samplesToRead);
 
-            waveform.pushSamples (lane, waveformScratch.data(), samplesToRead);
+            // waveformScratch is shared across lanes this tick, so pushing more
+            // than was written would feed this lane the previous lane's samples.
+            if (got > 0)
+                waveform.pushSamples (lane, waveformScratch.data(), got);
         }
     }
 
@@ -651,8 +648,6 @@ void MainComponent::maybeNotify (const Event& e, const juce::String& description
     if (e.severity != Severity::Critical)
         return;
 
-    lastNotifiedCritical = (float) e.elapsedSeconds;
-
     const juce::String title = juce::String ("Pink Noise Monitor: ") + toString (e.type);
     notificationEngine.postCritical (title, description, e.type);
 }
@@ -697,10 +692,11 @@ void MainComponent::startAudio()
     {
         sessionStartUtc = juce::Time::getCurrentTime();
 
-        const int numIn = juce::jlimit (1, 2, engine->getNumInputChannels() > 0 ? engine->getNumInputChannels() : 1);
-        inputMeter.setNumChannels (numIn);
         waveform.setSampleRate (engine->getSampleRate());
-        waveform.setNumInputChannels (engine->getNumInputChannels());
+
+        // Re-derive meters/names from the live device rather than forcing a
+        // stereo count here — this used to collapse an 8-input meter to 2 bars.
+        refreshChannelConfig();
 
         transport.setAudioRunning (true);
         statusBar.setAudioEngineState (TopStatusBar::EngineState::running);
@@ -1330,7 +1326,6 @@ void MainComponent::refreshChannelConfig()
     inputMeter.setNumChannels (juce::jmax (1, ins));
     inputMeter.setChannelNames (inputChannelNames);
 
-    waveform.setNumInputChannels (juce::jlimit (1, 2, ins));
 }
 
 void MainComponent::loadChannelConfig()

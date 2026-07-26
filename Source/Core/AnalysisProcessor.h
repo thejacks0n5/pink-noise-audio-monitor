@@ -60,7 +60,8 @@ struct BlockStats
     int32_t referenceOutputForInput[maxChannels] {};
 
     /** Whether each input participates in fault detection (see
-        SessionInfo::inputMonitored). Levels are measured regardless. */
+        SessionInfo::inputMonitored). Levels are measured regardless, but
+        unmonitored inputs are omitted from the CSV. */
     bool    inputMonitored[maxChannels] {};
     int32_t clipCount  { 0 };                 ///< Input samples at/above clip threshold, all channels.
     int32_t clipCountPerChannel[maxChannels] {};  ///< Same, split per input channel.
@@ -121,8 +122,11 @@ public:
         Measurement can carry dropoutFlag; sets StatusBits::dropoutActive. */
     void noteDropoutActive() noexcept;
 
-    /** MESSAGE THREAD, and only while the device callback is detached (i.e. from
-        AudioEngine::start()). Zeroes the session clock.
+    /** MESSAGE THREAD, and only while the device callback is detached.
+        AudioEngine::start() removes the callback around this call precisely
+        because the callback now stays attached while stopped (to keep input
+        meters live), so resetting underneath it would be a data race.
+        Zeroes the session clock.
 
         prepare() deliberately does NOT do this: it runs on every device restart,
         and zeroing there made elapsedSeconds — and therefore the CSV's derived

@@ -363,16 +363,16 @@ void TopStatusBar::resized()
 
     const Spec specs[] =
     {
-        { &audioCell,     105,  80 },
-        { &loggingCell,    95,  75 },
-        { &durationCell,   95,  75 },
-        { &modeCell,      160,  90 },
-        { &outDeviceCell, 165, 100 },
-        { &inDeviceCell,  175, 100 },
-        { &outChannelsCell, 120,  85 },
-        { &inChannelsCell,  120,  85 },
-        { &rateCell,      100,  85 },
-        { &bufferCell,    155, 110 },
+        { &audioCell,     105,  72 },
+        { &loggingCell,    95,  62 },
+        { &durationCell,   95,  62 },
+        { &modeCell,      160,  78 },
+        { &outDeviceCell, 165,  88 },
+        { &inDeviceCell,  175,  88 },
+        { &outChannelsCell, 120,  72 },
+        { &inChannelsCell,  120,  72 },
+        { &rateCell,      100,  70 },
+        { &bufferCell,    155,  92 },
     };
 
     constexpr int appStatusReserve = 90;   // keep the right-hand status readable
@@ -386,13 +386,41 @@ void TopStatusBar::resized()
                             ? (double) available / (double) preferredTotal
                             : 1.0;
 
-    for (const auto& spec : specs)
-    {
-        const int scaled = juce::roundToInt (spec.preferred * scale);
-        const int width  = juce::jmin (bounds.getWidth(), juce::jmax (spec.minimum, scaled));
+    // Clamping each cell at its minimum can push the total back over the space
+    // available, which previously starved the last cells and left the app-status
+    // cell zero-width. Measure the clamped total first and, if it overflows,
+    // shave the excess off the cells that still have slack above their minimum.
+    int widths[std::size (specs)] {};
+    int clampedTotal = 0;
 
-        spec.cell->bounds = bounds.removeFromLeft (width);
+    for (size_t i = 0; i < std::size (specs); ++i)
+    {
+        widths[i] = juce::jmax (specs[i].minimum, juce::roundToInt (specs[i].preferred * scale));
+        clampedTotal += widths[i];
     }
+
+    int excess = clampedTotal - available;
+
+    while (excess > 0)
+    {
+        int reclaimedThisPass = 0;
+
+        for (size_t i = 0; i < std::size (specs) && excess > 0; ++i)
+        {
+            if (widths[i] > specs[i].minimum)
+            {
+                --widths[i];
+                --excess;
+                ++reclaimedThisPass;
+            }
+        }
+
+        if (reclaimedThisPass == 0)
+            break;   // everything is at its minimum; nothing left to give
+    }
+
+    for (size_t i = 0; i < std::size (specs); ++i)
+        specs[i].cell->bounds = bounds.removeFromLeft (juce::jmin (bounds.getWidth(), widths[i]));
 
     appStatusCell.bounds = bounds;   // whatever remains
 }

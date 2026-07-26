@@ -87,9 +87,20 @@ public:
     EventDetector (const EventDetector&) = delete;
     EventDetector& operator= (const EventDetector&) = delete;
 
-    /** NON-REAL-TIME, audio stopped. Resets all state machines, the settling
-        timer, and the captured baseline. */
+    /** Called from audioDeviceAboutToStart on every device (re)start. Adopts the
+        new sample rate, re-arms the baseline and resets the rate-limit window,
+        but deliberately PRESERVES active conditions: a device restart must not
+        silently discard an ongoing fault, which would strand its start event
+        with no end and then re-report it as a new fault. */
     void prepare (double sampleRate, int maximumBlockSize);
+
+    /** MESSAGE THREAD, callback detached. A genuine new session: wipes every
+        state machine, baseline and rate-limit counter. Must be called by
+        AudioEngine::start(), which zeroes the session clock at the same time —
+        without it, a stopped-and-restarted session inherits a rate-limit window
+        set in the future and silently drops every event until the clock catches
+        up. */
+    void resetSessionState() noexcept;
 
     /** MESSAGE THREAD. Replaces the full threshold set (double-buffered
         internally; the audio thread adopts it at the next block boundary). */

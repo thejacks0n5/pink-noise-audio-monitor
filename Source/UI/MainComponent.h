@@ -31,7 +31,7 @@
         juce::String getInputDeviceName() const, getOutputDeviceName() const;
         // message-thread waveform snapshots (benign-race reads of the
         // reference ring + an equivalent input ring the engine maintains):
-        int readReferenceWaveform (float* dest, int maxSamples);
+        int readReferenceWaveform (int channel, float* dest, int maxSamples);
         int readInputWaveform (int channel, float* dest, int maxSamples);
 
     TIMER (single juce::Timer, ~30 Hz — startTimerHz (30) in the ctor):
@@ -72,8 +72,11 @@
       │ EventLogComponent                     (h = 30% of remaining, │
       │  (docked bottom, full width)           clamped 140..280 px)  │
       └──────────────────────────────────────────────────────────────┘
-      8 px outer margin, 8 px gaps; meters split the 200 px column as two
-      vertical bars side by side (refMeter 1 ch, inputMeter 1–2 ch).
+      8 px outer margin, 8 px gaps. The meter column width scales with the
+      channel count (capped at half the window) and is split between the two
+      meters in proportion to their bar counts; each meter draws one bar per
+      channel with its user-facing name beneath. The waveform draws up to
+      WaveformDisplay::maxLanes stacked lanes, each with its own channel selector.
 
     All bodies live in MainComponent.cpp (integration engineer).
   ==============================================================================
@@ -220,12 +223,11 @@ private:
     juce::StringArray outputChannelNames, inputChannelNames;
     juce::Array<int>  referenceOutputForInput;
 
-    /** Per-input detection enable. Unticked inputs still meter and log levels
-        but are excluded from dropout/clip/level-change detection — an unpatched
-        input would otherwise report a permanent critical dropout. */
+    /** Per-input detection enable. Unticked inputs still meter, but are excluded
+        from dropout/clip/level-change detection AND from measurements.csv — an
+        unpatched input would otherwise report a permanent critical dropout. */
     juce::Array<bool> inputMonitored;
 
-    juce::Component::SafePointer<juce::DialogWindow> channelSetupWindow;
 
     /** Drops a PopupMenu under a clicked TopStatusBar cell letting the user
         change output/input device, channel mode, sample rate or buffer size in
@@ -290,7 +292,6 @@ private:
     bool  loggingPaused        = false;
     bool  sessionAvailable     = false;      // a session folder exists to export
     juce::Time sessionStartUtc;              // for event wall-clock timestamps
-    float lastNotifiedCritical = 0.0f;       // dedupe helper (see maybeNotify)
 
     // Scratch buffer reused by updateMetersAndWaveform() for engine waveform
     // reads (preallocated once; never allocated per tick)

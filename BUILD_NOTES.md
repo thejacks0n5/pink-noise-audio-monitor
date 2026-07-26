@@ -241,9 +241,10 @@ relying on mid-session channel changes during a long run.
 4. **Notifications**: see §3 above — expect `unavailable` posts on an
    unsigned/dev build; this is by design, not a bug, but don't be surprised
    when Notification Center stays quiet during local testing.
-5. **Audio device**: the app opens the *default* input/output device on
-   Start Audio (best-effort stereo, falling back to mono — see
-   `AudioEngine::start()`). For a genuine loopback/monitoring test you need
+5. **Audio device**: the app opens the user's saved device at construction
+   (`AudioEngine::initialiseDevices`), and attaches the callback immediately with
+   output silenced so input meters are live before Start Audio. `start()` never
+   selects defaults — doing so used to discard the user's selection. For a genuine loopback/monitoring test you need
    an aggregate device or hardware loopback (e.g. BlackHole, or physically
    routing the output back into the input) so the "reference vs. returned
    input" comparison actually measures something non-trivial.

@@ -53,7 +53,7 @@ juce::String AudioEngine::initialiseDevices (const juce::XmlElement* savedState)
     // patching — before Start Audio has ever been pressed.
     if (devicesInitialised)
     {
-        outputSilenced.store (true, std::memory_order_relaxed);
+        outputSilenced.store (true, std::memory_order_release);
         deviceManager.addAudioCallback (this);
     }
 
@@ -83,21 +83,33 @@ bool AudioEngine::start()
     if (deviceManager.getCurrentAudioDevice() == nullptr)
         return false;
 
-    // A genuine session start — the only place the session clock goes back to
-    // zero. The callback may already be attached (silently metering input), so
-    // silence it while resetting to keep the reset off a live analysis pass.
-    outputSilenced.store (true, std::memory_order_relaxed);
-    analysisProcessor.resetSessionClock();
+    // DETACH before touching audio-thread state. Since the callback is now
+    // attached from launch (to keep input meters live), "silencing" does not
+    // stop it — processBlock keeps running. Resetting the non-atomic session
+    // clock underneath a live callback is a data race, and the reset can be
+    // lost when the audio thread writes back a stale sample count.
+    // removeAudioCallback blocks until the callback returns, so this is safe.
+    deviceManager.removeAudioCallback (this);
 
-    samplesSinceStart = 0;
+    // A genuine session start: clock to zero and every detector state machine
+    // wiped. Without the detector reset a stopped-and-restarted session keeps a
+    // rate-limit window set in the future and silently drops events until the
+    // clock catches up — hours, after a long run.
+    analysisProcessor.resetSessionClock();
+    eventDetector.resetSessionState();
+
+    samplesSinceStart  = 0;
     previousGainLinear = 0.0f;
 
-    // Idempotent: does nothing if initialiseDevices() already attached it.
-    deviceManager.addAudioCallback (this);
-
     generator.reset();
-    outputSilenced.store (false, std::memory_order_relaxed);
-    generator.startFade (true);
+
+    // Release-store pairs with the acquire load in the callback, so the
+    // generator's reset PRNG/filter state is visible before it is used.
+    outputSilenced.store (false, std::memory_order_release);
+
+    // Re-attaching calls audioDeviceAboutToStart, which prepares the generator,
+    // histories, analysis and detector for the live device and starts the fade.
+    deviceManager.addAudioCallback (this);
 
     running.store (true, std::memory_order_relaxed);
     return true;
@@ -118,7 +130,7 @@ void AudioEngine::stop()
     // Keep the callback attached and the device open: output goes silent but
     // input is still captured, so the meters keep moving and the user can see
     // which input they are patching.
-    outputSilenced.store (true, std::memory_order_relaxed);
+    outputSilenced.store (true, std::memory_order_release);
 
     running.store (false, std::memory_order_relaxed);
 }
@@ -245,7 +257,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputCha
     // 1. Reference block -> output. While silenced the outputs stay at the zero
     //    fill above, and that silence is written to the reference history so the
     //    reference meters read silence instead of holding a stale picture.
-    const bool silenced = outputSilenced.load (std::memory_order_relaxed);
+    const bool silenced = outputSilenced.load (std::memory_order_acquire);
 
     if (silenced)
         referenceHistory.write (outputChannelData, numOutputChannels, numSamples);

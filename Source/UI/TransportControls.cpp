@@ -173,25 +173,42 @@ void TransportControls::resized()
     markerButton.setBounds (bounds.removeFromRight (70));
     bounds.removeFromRight (12);
 
-    startAudioButton.setBounds (bounds.removeFromLeft (90));
-    bounds.removeFromLeft (4);
-    stopAudioButton.setBounds (bounds.removeFromLeft (90));
-    bounds.removeFromLeft (12);
+    // Scale the left-hand run when the window is narrow. Fixed widths summed to
+    // more than the 900 px minimum window, which starved Mute and left the
+    // output-level slider with no width at all.
+    const int wantLeft = 90 + 4 + 90 + 12          // audio group
+                       + 100 + 4 + 70 + 4 + 100 + 12  // logging group
+                       + 70 + 4 + 46 + 140;           // mute + caption + slider
+    const double leftScale = bounds.getWidth() < wantLeft
+                               ? (double) bounds.getWidth() / (double) wantLeft
+                               : 1.0;
 
-    startLoggingButton.setBounds (bounds.removeFromLeft (100));
-    bounds.removeFromLeft (4);
-    pauseLoggingButton.setBounds (bounds.removeFromLeft (70));
-    bounds.removeFromLeft (4);
-    stopLoggingButton.setBounds (bounds.removeFromLeft (100));
-    bounds.removeFromLeft (12);
+    const auto lw = [leftScale] (int w, int minimum)
+    {
+        return juce::jmax (minimum, juce::roundToInt (w * leftScale));
+    };
 
-    muteButton.setBounds (bounds.removeFromLeft (70));
-    bounds.removeFromLeft (4);
-    outputLevelCaption.setBounds (bounds.removeFromLeft (46));
+    const auto take = [&bounds] (int w) { return bounds.removeFromLeft (juce::jmin (w, bounds.getWidth())); };
 
-    // The slider (plus its dBFS text box) absorbs the middle, capped so the
+    startAudioButton.setBounds (take (lw (90, 62)));
+    take (4);
+    stopAudioButton.setBounds (take (lw (90, 62)));
+    take (12);
+
+    startLoggingButton.setBounds (take (lw (100, 66)));
+    take (4);
+    pauseLoggingButton.setBounds (take (lw (70, 50)));
+    take (4);
+    stopLoggingButton.setBounds (take (lw (100, 66)));
+    take (12);
+
+    muteButton.setBounds (take (lw (70, 50)));
+    take (4);
+    outputLevelCaption.setBounds (take (lw (46, 34)));
+
+    // The slider (plus its dBFS text box) absorbs what is left, capped so the
     // readout never drifts far from the controls it belongs to.
-    outputLevelSlider.setBounds (bounds.removeFromLeft (juce::jmin (240, bounds.getWidth())));
+    outputLevelSlider.setBounds (take (juce::jmin (240, juce::jmax (0, bounds.getWidth()))));
 }
 
 void TransportControls::paint (juce::Graphics& g)

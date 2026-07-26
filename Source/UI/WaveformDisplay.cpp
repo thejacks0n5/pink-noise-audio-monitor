@@ -22,6 +22,15 @@ WaveformDisplay::WaveformDisplay()
     laneSources[0] = { false, 0, true };
     laneSources[1] = { true,  0, true };
 
+    // Lane count needs a UI entry point; without one setNumLanes() was dead code
+    // and the display was permanently stuck at two lanes.
+    for (int n : laneCountOptions)
+        laneCountSelector.addItem (juce::String (n) + (n == 1 ? " lane" : " lanes"), n);
+
+    laneCountSelector.setSelectedId (numLanes, juce::dontSendNotification);
+    laneCountSelector.onChange = [this] { setNumLanes (laneCountSelector.getSelectedId()); };
+    addAndMakeVisible (laneCountSelector);
+
     rebuildLaneSelectors();
     rebuildRings();
 }
@@ -64,11 +73,6 @@ void WaveformDisplay::setDbFloor (float newFloorDb)
 }
 
 //==============================================================================
-void WaveformDisplay::setNumInputChannels (int)
-{
-    // Lanes decide what they draw; nothing to do here any more.
-}
-
 void WaveformDisplay::setNumLanes (int newNumLanes)
 {
     newNumLanes = juce::jlimit (1, maxLanes, newNumLanes);
@@ -78,6 +82,7 @@ void WaveformDisplay::setNumLanes (int newNumLanes)
 
     numLanes = newNumLanes;
     rebuildLaneSelectors();
+    rebuildRings();
     resized();
     dirty = true;
     repaint();
@@ -287,9 +292,20 @@ juce::Colour WaveformDisplay::colourForLane (int lane) const noexcept
 juce::Rectangle<int> WaveformDisplay::laneBounds (int lane) const
 {
     auto bounds = getLocalBounds();
-    const int laneHeight = juce::jmax (1, bounds.getHeight() / juce::jmax (1, numLanes));
+    const int lanes      = juce::jmax (1, numLanes);
+    const int laneHeight = juce::jmax (1, bounds.getHeight() / lanes);
 
-    return { bounds.getX(), bounds.getY() + lane * laneHeight, bounds.getWidth(), laneHeight };
+    // Give the last lane the remainder so integer division leaves no dead strip.
+    const int height = (lane == lanes - 1) ? bounds.getHeight() - laneHeight * (lanes - 1)
+                                           : laneHeight;
+
+    return { bounds.getX(), bounds.getY() + lane * laneHeight, bounds.getWidth(), height };
+}
+
+juce::Rectangle<int> WaveformDisplay::laneTraceBounds (int lane) const
+{
+    // The selector sits in a reserved top strip rather than on top of the trace.
+    return laneBounds (lane).withTrimmedTop (24);
 }
 
 //==============================================================================
@@ -301,8 +317,9 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
     for (int lane = 0; lane < numLanes; ++lane)
     {
-        const auto band = laneBounds (lane);
-        const float centreY = (float) band.getCentreY();
+        const auto band  = laneBounds (lane);
+        const auto trace = laneTraceBounds (lane);
+        const float centreY = (float) trace.getCentreY();
 
         // Lane separator
         if (lane > 0)
@@ -320,7 +337,7 @@ void WaveformDisplay::paint (juce::Graphics& g)
         {
             g.setColour (Palette::get (Palette::textSecondary).withAlpha (0.5f));
             g.setFont (juce::Font (juce::FontOptions (11.0f)));
-            g.drawFittedText ("(no channel selected)", band, juce::Justification::centred, 1);
+            g.drawFittedText ("(no channel selected)", trace, juce::Justification::centred, 1);
             continue;
         }
 
@@ -332,7 +349,7 @@ void WaveformDisplay::paint (juce::Graphics& g)
         const int filled  = ring.columnsFilled;
 
         // Half-height of this lane's trace, leaving room for the selector.
-        const float halfHeight = (float) band.getHeight() * 0.5f - 6.0f;
+        const float halfHeight = (float) trace.getHeight() * 0.5f - 2.0f;
         if (halfHeight <= 1.0f)
             continue;
 
@@ -398,23 +415,31 @@ void WaveformDisplay::paint (juce::Graphics& g)
     {
         g.setColour (Palette::get (Palette::severityWarning).withAlpha (0.85f));
         g.setFont (juce::Font (juce::FontOptions (12.0f)));
-        g.drawFittedText ("FROZEN", getLocalBounds().removeFromTop (18).removeFromRight (70),
+        g.drawFittedText ("FROZEN", getLocalBounds().removeFromBottom (18).removeFromRight (70),
                           juce::Justification::centred, 1);
     }
 }
 
 void WaveformDisplay::resized()
 {
-    // Each lane's channel selector sits at the top-left of its own band, so the
-    // dropdown is unambiguously attached to the trace it controls.
+    // Each lane's channel selector sits in its own band's reserved top strip, so
+    // the dropdown is unambiguously attached to the trace it controls.
     for (int lane = 0; lane < laneSelectors.size(); ++lane)
     {
         const auto band = laneBounds (lane);
-        laneSelectors[lane]->setBounds (band.getX() + 6, band.getY() + 4,
+        laneSelectors[lane]->setBounds (band.getX() + 6, band.getY() + 3,
                                         juce::jmin (150, juce::jmax (90, band.getWidth() / 5)), 18);
     }
 
-    rebuildRings();
+    laneCountSelector.setBounds (juce::jmax (0, getWidth() - 96), 3, 90, 18);
+
+    // Ring capacity is a function of width alone. Rebuilding on every resize
+    // wiped all history whenever a lane was added or a name was typed.
+    if (getWidth() != lastRingWidth)
+    {
+        lastRingWidth = getWidth();
+        rebuildRings();
+    }
 }
 
 void WaveformDisplay::mouseDown (const juce::MouseEvent& e)

@@ -4,7 +4,7 @@
     WaveformDisplay.h
     Pink Noise Audio Monitor (pnam) — scrolling reference vs. input waveform.
 
-    Draws up to three traces (reference, input L, input R) over a shared time
+    Draws up to maxLanes stacked lanes, each drawing a user-chosen channel.
     axis. All data arrives on the MESSAGE THREAD via pushSamples(): each UI
     tick, MainComponent reads the most recent audio from the engine (the
     engine exposes message-thread-safe snapshots of ReferenceHistory and its
@@ -86,9 +86,6 @@ public:
 
     //==========================================================================
 
-    /** Retained for callers; lanes now decide what they draw. */
-    void setNumInputChannels (int numChannels);
-
     /** How many stacked lanes to draw (clamped to maxLanes). */
     void setNumLanes (int numLanes);
     int  getNumLanes() const noexcept { return numLanes; }
@@ -157,6 +154,7 @@ private:
     void rebuildRings();                 // on resize / rate / window change
     juce::Colour colourForLane (int lane) const noexcept;
     void rebuildLaneSelectors();         // repopulate the per-lane combo boxes
+    juce::Rectangle<int> laneTraceBounds (int lane) const;   // band minus selector strip
     juce::Rectangle<int> laneBounds (int lane) const;
 
     double sampleRate        = 48000.0;
@@ -173,6 +171,8 @@ private:
 
     juce::StringArray availableOutputNames, availableInputNames;
     juce::OwnedArray<juce::ComboBox> laneSelectors;
+    juce::ComboBox laneCountSelector;
+    int lastRingWidth = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformDisplay)
 };

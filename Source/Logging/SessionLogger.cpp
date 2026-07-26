@@ -257,7 +257,11 @@ void SessionLogger::logEvent (const Event& e, const juce::String& description)
 //==============================================================================
 juce::String SessionLogger::composeDescription (const Event& e)
 {
-    juce::String channelText = juce::String (toString (e.channel));
+    // channelIndex identifies the channel once there are more than two; the
+    // legacy `channel` field reads "Both" for every per-channel fault.
+    juce::String channelText = e.channelIndex >= 0
+                                 ? (e.channelIsInput ? "In " : "Out ") + juce::String (e.channelIndex + 1)
+                                 : juce::String (toString (e.channel));
 
     switch (e.type)
     {

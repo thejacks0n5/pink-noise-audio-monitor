@@ -31,6 +31,11 @@ EventDetector::EventDetector (EventQueue& queueToFill)
 {
     thresholdSlots[0] = Thresholds{};
     thresholdSlots[1] = Thresholds{};
+
+    // Value-initialised atomics would read 0.0, not NaN, breaking the
+    // "no baseline captured yet" contract for anything polling before start.
+    for (int ch = 0; ch < maxChannels; ++ch)
+        baselineGainDiffDb[ch].store (std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
 }
 
 //==============================================================================
@@ -38,6 +43,37 @@ void EventDetector::prepare (double newSampleRate, int /*maximumBlockSize*/)
 {
     sampleRate = newSampleRate;
 
+    // Active conditions survive: a reconfiguration is not a reason to forget an
+    // ongoing fault. Their timestamps travel with them, so the eventual end
+    // event still measures from the original start. Pending (unconfirmed) ones
+    // are dropped — see the class comment.
+    for (int ch = 0; ch < maxChannels; ++ch)
+    {
+        if (dropoutState[ch].phase == ConditionState::Phase::pending)
+            dropoutState[ch] = ConditionState{};
+
+        if (clippingState[ch].phase == ConditionState::Phase::pending)
+            clippingState[ch] = ConditionState{};
+
+        if (levelChangeState[ch].phase == ConditionState::Phase::pending)
+            levelChangeState[ch] = ConditionState{};
+
+        // The round-trip gain is device-dependent, so it must be recaptured.
+        baselineGainDiffDb[ch].store (std::numeric_limits<float>::quiet_NaN(), std::memory_order_relaxed);
+        baselineAccumSum[ch] = 0.0;
+    }
+
+    baselineRecaptureRequested.store (true, std::memory_order_relaxed);
+    baselineAccumSeconds = 0.0;
+    baselineAccumBlocks  = 0;
+
+    // The clock may have moved; a stale window would gate events off.
+    rateWindowStartSeconds = 0.0;
+    eventsThisWindow       = 0;
+}
+
+void EventDetector::resetSessionState() noexcept
+{
     for (int ch = 0; ch < maxChannels; ++ch)
     {
         dropoutState[ch]     = ConditionState{};
@@ -190,6 +226,9 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                 levelChangeState[ch] = ConditionState{};
         }
 
+        dropoutActiveAtomic.store (false, std::memory_order_relaxed);
+        clippingActiveAtomic.store (false, std::memory_order_relaxed);
+
         return false;
     }
 
@@ -204,6 +243,53 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
         // already in flight so a start event can't be left without its end.
         if (! stats.inputMonitored[ch])
         {
+            // Close an in-flight fault properly: silently wiping it would leave a
+            // start event in the log with no matching end.
+            if (dropoutState[ch].phase == ConditionState::Phase::active)
+            {
+                Event e;
+                e.type           = EventType::CompleteDropout;
+                e.severity       = Severity::Critical;
+                e.channel        = ChannelId::Both;
+                e.channelIndex   = ch;
+                e.elapsedSeconds = now;
+                e.measuredValue  = now - dropoutState[ch].conditionStartSeconds;
+                e.difference     = e.measuredValue;
+                e.thresholdUsed  = t.dropoutThresholdDb;
+                e.code           = eventCodeEnd;
+                tryPush (e);
+            }
+
+            if (clippingState[ch].phase == ConditionState::Phase::active)
+            {
+                Event e;
+                e.type           = EventType::Clipping;
+                e.severity       = Severity::Warning;
+                e.channel        = ChannelId::Both;
+                e.channelIndex   = ch;
+                e.elapsedSeconds = now;
+                e.measuredValue  = now - clippingState[ch].conditionStartSeconds;
+                e.difference     = (double) clippingState[ch].accumulatedCount;
+                e.thresholdUsed  = t.clipThresholdLinear;
+                e.code           = eventCodeEnd;
+                tryPush (e);
+            }
+
+            if (levelChangeState[ch].phase == ConditionState::Phase::active)
+            {
+                Event e;
+                e.type           = EventType::LevelChange;
+                e.severity       = Severity::Warning;
+                e.channel        = ChannelId::Both;
+                e.channelIndex   = ch;
+                e.elapsedSeconds = now;
+                e.measuredValue  = now - levelChangeState[ch].conditionStartSeconds;
+                e.difference     = levelChangeState[ch].worstValue;
+                e.thresholdUsed  = t.levelChangeToleranceDb;
+                e.code           = eventCodeEnd;
+                tryPush (e);
+            }
+
             dropoutState[ch]     = ConditionState{};
             clippingState[ch]    = ConditionState{};
             levelChangeState[ch] = ConditionState{};
@@ -309,7 +395,7 @@ bool EventDetector::processBlockStats (const BlockStats& stats) noexcept
                 }
 
                 clippingState[ch].phaseStartSeconds = now; // last time clipping was observed
-                clippingState[ch].accumulatedCount += stats.clipCount;
+                clippingState[ch].accumulatedCount += stats.clipCountPerChannel[ch];
             }
             else if (clippingState[ch].phase == ConditionState::Phase::active)
             {

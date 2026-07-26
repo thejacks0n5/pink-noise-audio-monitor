@@ -138,7 +138,7 @@ private:
     int maxStoredEvents = defaultMaxStoredEvents;
 
     Severity minimumSeverity = Severity::Info;
-    bool typeVisible[7] { true, true, true, true, true, true, true }; // per EventType
+    bool typeVisible[numEventTypes] { true, true, true, true, true, true, true }; // per EventType
     bool autoScroll = true;
 
     // Toolbar widgets (built in the ctor, laid out in resized()):

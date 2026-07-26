@@ -23,7 +23,14 @@ Build **Version One only.** Do NOT start on advanced features until V1 compiles,
 overnight, and is dependable. V1 = device selection, deterministic pink noise + level,
 peak/RMS meters, basic waveform, start/stop logging, CSV measurement + event logs,
 dropout/clip/level-change detection, live event log, basic macOS notification, stable
-long-session operation.
+long-session operation. V1 has since grown multichannel support (per-channel analysis,
+detection, meters, naming and CSV columns), a required named log destination, and
+per-input Monitor toggles.
+
+**Logging invariants worth preserving:** the session clock is monotonic (only
+`AudioEngine::start()` zeroes it, with the callback detached); one unresolved fault produces
+exactly one start/end pair and is NOT re-reported across suppression or device restarts;
+unmonitored inputs are excluded from `measurements.csv` entirely.
 
 Explicitly **out of scope for now** (later phases): FFT/spectrum, transfer function,
 frequency-response/EQ/filter detection, compression/limiting detection, delay/correlation
@@ -34,13 +41,19 @@ plugin. The architecture leaves room for these, but don't build them yet.
 
 Namespace `pnam` throughout. Modules under `Source/`:
 
-- `Model/DataModel.h(.cpp)` — `EventType`, `Severity`, `ChannelId` enums; the trivially-copyable
-  `Measurement` and `Event` POD structs (these are the FIFO payloads AND define the CSV columns);
-  `SessionInfo` (message-thread only). **The CSV schema is derived from these structs — keep them in sync.**
+- `Model/DataModel.h(.cpp)` — `EventType` (incl. `AudioSettingsChanged`), `Severity`, `ChannelId`
+  enums; the trivially-copyable `Measurement` and `Event` POD structs (the FIFO payloads);
+  `SessionInfo` (message-thread only, carries channel names, reference mapping and Monitor flags).
+  **Multichannel:** channel data lives in fixed arrays bounded by `pnam::maxChannels` (64) with
+  runtime counts — the ceiling exists because the FIFO payload must stay a fixed-size POD.
+  `Event::channelIndex` (not `channel`) is the authoritative channel identity.
+  **The CSV schema is derived per-session from SessionInfo — it is no longer a fixed column list.**
 - `Core/MeasurementQueue.h` — header-only lock-free SPSC queues (`juce::AbstractFifo`) for
   `Measurement` and `Event`. Audio thread pushes; message thread drains.
 - `Core/PinkNoiseGenerator` — seeded xorshift64* + Paul Kellet economy pink filter. Deterministic:
-  same seed ⇒ identical output. Level in dBFS (default −20), mute, fade in/out, mono/stereo.
+  same seed ⇒ identical output. Level in dBFS (default −20), mute, fade in/out. Generates an
+  INDEPENDENT stream per output channel (splitmix64-derived per-channel seeds, up to
+  `pnam::maxChannels`), so a returning signal can be traced to the output feeding it.
 - `Core/ReferenceHistory` — preallocated ring buffer of recent reference samples for comparison.
 - `Core/AnalysisProcessor` — audio-thread per-block peak/RMS/gain-diff → emits `Measurement`s; exposes
   atomic getters the UI polls for live meters.
@@ -61,7 +74,10 @@ Namespace `pnam` throughout. Modules under `Source/`:
   `TopStatusBar`'s OUT/IN/CH/RATE/BUFFER cells are click-to-edit: they fire `onCellClicked`, and
   `MainComponent::showStatusBarDeviceMenu` drops a `PopupMenu` that changes the device in place.
   `MainComponent` is a `juce::ChangeListener` on the `AudioDeviceManager` and persists the selection
-  to `appProperties` ("audioDeviceState") on every change.
+  to `appProperties` ("audioDeviceState") on every change. `WaveformDisplay` draws up to
+  `maxLanes` (8) stacked lanes, each with its own channel selector; `LevelMeterComponent` draws one
+  bar per channel with its user-facing name. Channel naming, per-input Monitor toggles and the
+  reference-output mapping live inside the Audio Device Setup dialog.
 - `Main.cpp` — `juce::JUCEApplication` + `DocumentWindow` hosting `MainComponent`, plus the macOS main
   menu (`MenuBarModel` + `ApplicationCommandManager`). **Preferences lives in the application menu
   (Cmd-,), not on a transport button** — macOS renders it as "Settings…". `MainComponent::openSettings`

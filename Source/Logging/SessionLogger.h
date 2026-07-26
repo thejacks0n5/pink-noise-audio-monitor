@@ -28,13 +28,18 @@
             events.csv
             session_info.txt      (key: value dump of SessionInfo)
 
-    CSV schemas (fixed contract — analysis scripts depend on these):
+    CSV schemas:
 
-      measurements.csv columns:
+      measurements.csv columns are DERIVED from the session's channel counts and
+      user channel names (see getMeasurementCsvHeader):
         timestamp_utc, elapsed_s, sample_rate, buffer_size,
-        ref_peak_db, ref_rms_db,
-        in_peak_db_l, in_peak_db_r, in_rms_db_l, in_rms_db_r,
-        gain_diff_db, correlation, dropout_flag, clip_count, status_code
+        <out name>_peak_db, <out name>_rms_db,          (per output)
+        <in name>_peak_db, <in name>_rms_db,
+        <in name>_gain_diff_db, <in name>_clip_count,   (per MONITORED input)
+        correlation, dropout_flag, clip_count, status_code
+      Unmonitored inputs contribute no columns. The layout is fixed for the
+      lifetime of a session (it is taken from the SessionInfo snapshot), so a
+      mid-session device change cannot shift columns.
 
       events.csv columns:
         timestamp_utc, elapsed_s, event_type, severity, channel,
@@ -115,7 +120,6 @@ public:
         NotificationEngine for consistent wording. */
     static juce::String composeDescription (const Event& e);
 
-    /** Fixed CSV headers (exact contract; see file comment). */
     /** Column layout depends on the session's channel count and names, so the
         header is derived from the SessionInfo rather than being fixed. Per-channel
         columns are emitted as "<name>_peak_db", "<name>_rms_db" (and

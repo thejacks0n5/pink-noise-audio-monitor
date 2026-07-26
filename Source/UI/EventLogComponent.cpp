@@ -131,6 +131,7 @@ void EventLogComponent::addEvent (const Event& event, const juce::String& descri
 void EventLogComponent::clear()
 {
     rows.clear();
+    rebuildFilteredIndex();
     visibleRows.clear();
     table.updateContent();
     repaint();
@@ -229,7 +230,7 @@ bool EventLogComponent::passesFilter (const Row& row) const noexcept
         return false;
 
     const int idx = (int) row.event.type;
-    if (idx >= 0 && idx < 7 && ! typeVisible[idx])
+    if (idx >= 0 && idx < numEventTypes && ! typeVisible[idx])
         return false;
 
     return true;
@@ -304,7 +305,13 @@ void EventLogComponent::paintCell (juce::Graphics& g, int rowNumber, int columnI
                             justification = juce::Justification::centredRight; break;
         case colType:       text = toString (event.type); break;
         case colSeverity:   text = toString (event.severity); break;
-        case colChannel:    text = toString (event.channel); justification = juce::Justification::centred; break;
+        case colChannel:    // channelIndex is authoritative once there are more than
+                            // two channels; `channel` reads "Both" for every per-channel
+                            // fault and cannot say which input dropped out.
+                            text = event.channelIndex >= 0
+                                     ? (event.channelIsInput ? "In " : "Out ") + juce::String (event.channelIndex + 1)
+                                     : juce::String (toString (event.channel));
+                            justification = juce::Justification::centred; break;
         case colMeasured:   text = formatNumber (event.measuredValue); useMono = true;
                             justification = juce::Justification::centredRight; break;
         case colExpected:   text = formatNumber (event.expectedValue); useMono = true;

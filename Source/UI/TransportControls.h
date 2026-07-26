@@ -24,7 +24,7 @@
     Layout (single 56 px strip, left → right):
       [Start Audio][Stop Audio] | [Start Log][Pause Log][Stop Log] |
       [Mute][ Output Level ───────── -20.0 dBFS ] |
-      [Marker][Reset][Export] | (spacer) | [Audio Setup][Settings]
+      [Marker][Reset][Export] | (spacer) | [Audio Setup]
 
     MESSAGE THREAD ONLY.
   ==============================================================================

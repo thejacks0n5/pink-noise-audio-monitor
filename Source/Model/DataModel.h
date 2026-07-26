@@ -44,6 +44,9 @@ enum class EventType : int32_t
     AudioSettingsChanged = 7
 };
 
+/** Number of EventType values — keep in step when appending. */
+constexpr int numEventTypes = 8;
+
 /** Severity used for UI colouring, CSV, and notification gating.
     Only Severity::Critical events may trigger desktop notifications. */
 enum class Severity : int32_t
@@ -86,8 +89,7 @@ constexpr float silenceFloorDb = -120.0f;
     the audio thread hand data to the message thread without allocating or
     locking (see ARCHITECTURE.md and the real-time rule in CLAUDE.md). Channel
     counts are therefore runtime values bounded by this constant rather than
-    unbounded. Devices exposing more than this are clamped, and the clamp is
-    reported once as an AudioSettingsChanged event. */
+    unbounded. Devices exposing more than this are clamped silently. */
 constexpr int maxChannels = 64;
 
 //==============================================================================
@@ -98,8 +100,8 @@ constexpr int maxChannels = 64;
     (after the wall-clock timestamp column, which the SessionLogger prepends
     on the message thread).
 
-    Mono sessions: the L fields carry channel 0 and the R fields are set
-    equal to the L fields (so downstream code never branches on channel count).
+    Channel data lives in fixed-size arrays; only the first
+    numOutputChannels / numInputChannels entries are meaningful.
 
     All dB values are dBFS. Silence is reported as silenceFloorDb.
 */

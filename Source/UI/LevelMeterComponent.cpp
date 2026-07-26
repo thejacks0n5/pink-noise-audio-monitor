@@ -143,7 +143,7 @@ void LevelMeterComponent::updateValues (float peakDbL, float rmsDbL,
 //==============================================================================
 void LevelMeterComponent::notifyClipped (int channel)
 {
-    channel = juce::jlimit (0, 1, channel);
+    channel = juce::jlimit (0, maxChannels - 1, channel);
     if (! clipLit[channel])
     {
         clipLit[channel] = true;
@@ -153,16 +153,25 @@ void LevelMeterComponent::notifyClipped (int channel)
 
 void LevelMeterComponent::clearClipIndicator()
 {
-    if (clipLit[0] || clipLit[1])
+    bool anyLit = false;
+
+    for (auto& lit : clipLit)
     {
-        clipLit[0] = clipLit[1] = false;
-        repaint (clipArea);
+        anyLit = anyLit || lit;
+        lit = false;
     }
+
+    if (anyLit)
+        repaint (clipArea);
 }
 
 bool LevelMeterComponent::isClipIndicatorLit() const noexcept
 {
-    return clipLit[0] || clipLit[1];
+    for (auto lit : clipLit)
+        if (lit)
+            return true;
+
+    return false;
 }
 
 //==============================================================================
@@ -217,7 +226,10 @@ void LevelMeterComponent::paint (juce::Graphics& g)
     if (! barArea.isEmpty())
     {
         const int gap = 4;
-        const int barWidth = (barArea.getWidth() - gap * (numChannels - 1) - 26) / juce::jmax (1, numChannels);
+        // Floor the width: the unclamped formula went negative at high channel
+        // counts and every bar rect became degenerate, so nothing drew at all.
+        const int barWidth = juce::jmax (2, (barArea.getWidth() - gap * (numChannels - 1) - 26)
+                                              / juce::jmax (1, numChannels));
 
         for (int ch = 0; ch < numChannels; ++ch)
         {
