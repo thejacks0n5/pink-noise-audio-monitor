@@ -9,10 +9,11 @@ A professional audio testing/monitoring app for **macOS (Apple Silicon)**, writt
 returned signal on an input, aligns/compares them, and logs audio problems (dropouts,
 clipping, level changes, …) for long overnight test sessions.
 
-This repo is the **Version One foundation**, generated as a clean, architected scaffold.
-It has **not been compiled on a Mac yet** — the first job is to get it building in Xcode on
-Apple Silicon and fix whatever the compiler finds. See `BUILD_NOTES.md` for known soft spots
-the generator already flagged.
+**Status: V1 builds, runs and has been exercised extensively on real hardware**
+(a UMC404HD on an M3 Max), through 20+ commits of fixes, a three-way audit and a
+2-hour soak — but it has NOT yet done its defining test: a full overnight run.
+That is the next job. `BUILD_NOTES.md` is the operational record: §3b/§3c what
+was fixed and why, §5 the overnight-run checklist for a fresh machine.
 
 **Target machine:** Mac mini, M4 Pro (Apple Silicon). Xcode + Core Audio + a real audio
 interface (or a loopback device like BlackHole) are needed to actually run and test it.
@@ -117,20 +118,28 @@ See `BUILD_NOTES.md` §3–4 for known discrepancies (notifications need signing
 actually display; settings dialog is intentionally minimal; waveform sampling is best-effort) and
 the full first-build checklist. `ARCHITECTURE.md` and `UI_DESIGN.md` have the design rationale.
 
-## Suggested first session (Phase 2 plan)
+## Suggested session on a fresh machine (the overnight run)
 
-1. **Get it compiling.** `cmake -B build -G Xcode`, build, fix every error/warning-as-error until
-   the app launches. Work down the compiler output; don't refactor architecture to dodge an error.
-2. **Smoke test on hardware.** Launch, open Audio Device Setup, pick your interface, Start Audio →
-   confirm pink noise plays and the reference meter moves. Route output→input (loopback/BlackHole),
-   confirm the input meter + waveform respond.
-3. **Verify the V1 success criteria** (from the product spec): manually introduce a dropout, a clip,
-   and a level change and confirm each is detected, logged to `events.csv` with an accurate timestamp,
-   and shown in the live event log — while the UI stays responsive.
-4. **Overnight stability.** Run 12+ hours; confirm no crash, no leak, no runaway log growth, and
-   graceful recovery if the audio device is unplugged/replugged.
-5. Only then move to the next spec phase (delay/correlation alignment, then FFT/frequency analysis).
+1. **Build.** `brew install cmake` if missing. `cmake -B build -G "Unix Makefiles"
+   -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j`. If the Xcode generator
+   complains, the Xcode license is unaccepted — the Makefiles/CLT route is how
+   every build so far was made. Expect zero errors and zero warnings; anything
+   else is a regression, not a known issue.
+2. **Configure for THIS machine's hardware** — settings do not travel between
+   machines. Follow `BUILD_NOTES.md` §5 in order: device + channel counts,
+   channel names, **Monitor unticked on unpatched inputs**, log destination,
+   mic permission, sleep prevention.
+3. **Smoke-test the loop**: Start Audio (Cmd-R), meters + waveform lanes live,
+   Start Logging (Cmd-L), drop + rename a marker (Cmd-Shift-M, double-click the
+   row), pull a cable to force a real dropout and confirm exactly ONE start
+   event, then one end on reconnect.
+4. **Overnight (the actual V1 acceptance test).** 12+ hours: no crash, flat
+   memory, monotonic `elapsed_s`, no runaway log growth, one start/end pair per
+   genuine fault, graceful recovery if the device hiccups.
+5. Only after that passes: next spec phase (delay/correlation alignment, then
+   FFT/frequency analysis).
 
-A good opening prompt for Claude Code: *"Read CLAUDE.md and BUILD_NOTES.md, then build this project
-with CMake/Xcode and fix compile and link errors until the app launches. Don't add features — just
-get V1 compiling and running. Show me the errors you hit and how you fixed them."*
+A good opening prompt for Claude Code on that machine: *"Read CLAUDE.md and
+BUILD_NOTES.md (especially §5), build the project, launch it, and help me
+configure it for this machine's audio interface and an overnight run. Verify
+each step on screen. Don't add features."*
