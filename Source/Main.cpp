@@ -32,9 +32,62 @@ namespace CommandIDs
         showChannelSetup,
         toggleAudio,
         toggleLogging,
-        addMarker
+        addMarker,
+        showAbout,
+        windowMinimize,
+        windowZoom
     };
 }
+
+//==============================================================================
+/** Standard About box: name, version, one-line description, copyright. */
+class AboutBoxComponent : public juce::Component
+{
+public:
+    AboutBoxComponent()
+    {
+        title.setText (JUCE_APPLICATION_NAME_STRING, juce::dontSendNotification);
+        title.setFont (juce::Font (juce::FontOptions (22.0f, juce::Font::bold)));
+        title.setJustificationType (juce::Justification::centred);
+
+        version.setText ("Version " + juce::String (JUCE_APPLICATION_VERSION_STRING)
+                           + juce::String::fromUTF8 ("  \xc2\xb7  JUCE ") + juce::String (JUCE_MAJOR_VERSION) + "."
+                           + juce::String (JUCE_MINOR_VERSION) + "." + juce::String (JUCE_BUILDNUMBER),
+                         juce::dontSendNotification);
+        version.setJustificationType (juce::Justification::centred);
+        version.setColour (juce::Label::textColourId, pnam::Palette::get (pnam::Palette::textSecondary));
+
+        blurb.setText ("Deterministic pink-noise monitoring for long-run audio path testing:\n"
+                       "per-channel analysis, fault detection and CSV session logs.",
+                       juce::dontSendNotification);
+        blurb.setJustificationType (juce::Justification::centred);
+
+        copyright.setText (juce::String::fromUTF8 ("\xc2\xa9 ") + juce::String (juce::Time::getCurrentTime().getYear())
+                             + " pnam", juce::dontSendNotification);
+        copyright.setJustificationType (juce::Justification::centred);
+        copyright.setColour (juce::Label::textColourId, pnam::Palette::get (pnam::Palette::textSecondary));
+
+        for (auto* l : { &title, &version, &blurb, &copyright })
+            addAndMakeVisible (l);
+
+        setSize (380, 190);
+    }
+
+    void resized() override
+    {
+        auto b = getLocalBounds().reduced (16);
+        title.setBounds (b.removeFromTop (34));
+        version.setBounds (b.removeFromTop (22));
+        b.removeFromTop (10);
+        blurb.setBounds (b.removeFromTop (56));
+        copyright.setBounds (b.removeFromBottom (20));
+    }
+
+private:
+    juce::Label title, version, blurb, copyright;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AboutBoxComponent)
+};
 
 //==============================================================================
 class PinkNoiseAudioMonitorWindow : public juce::DocumentWindow
@@ -108,6 +161,8 @@ public:
         // is where macOS users expect it — and it picks up Cmd-, from the
         // command's default keypress.
         juce::PopupMenu appleMenuItems;
+        appleMenuItems.addCommandItem (&commandManager, CommandIDs::showAbout);
+        appleMenuItems.addSeparator();
         appleMenuItems.addCommandItem (&commandManager, CommandIDs::showPreferences);
 
         juce::MenuBarModel::setMacMainMenu (this, &appleMenuItems);
@@ -135,7 +190,7 @@ public:
     // juce::MenuBarModel
     juce::StringArray getMenuBarNames() override
     {
-        return { "Audio", "Logging" };
+        return { "Audio", "Logging", "Window" };
     }
 
     juce::PopupMenu getMenuForIndex (int topLevelMenuIndex, const juce::String&) override
@@ -155,6 +210,11 @@ public:
             menu.addCommandItem (&commandManager, CommandIDs::addMarker);
             menu.addSeparator();
             menu.addCommandItem (&commandManager, CommandIDs::setLogFile);
+        }
+        else if (topLevelMenuIndex == 2)
+        {
+            menu.addCommandItem (&commandManager, CommandIDs::windowMinimize);
+            menu.addCommandItem (&commandManager, CommandIDs::windowZoom);
         }
 
         return menu;
@@ -177,6 +237,9 @@ public:
         commands.add (CommandIDs::toggleAudio);
         commands.add (CommandIDs::toggleLogging);
         commands.add (CommandIDs::addMarker);
+        commands.add (CommandIDs::showAbout);
+        commands.add (CommandIDs::windowMinimize);
+        commands.add (CommandIDs::windowZoom);
     }
 
     void getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result) override
@@ -222,7 +285,22 @@ public:
 
             case CommandIDs::addMarker:
                 result.setInfo ("Add Marker", "Drop a manual marker into the log", "Transport", 0);
+                result.addDefaultKeypress ('m', juce::ModifierKeys::commandModifier
+                                                  | juce::ModifierKeys::shiftModifier);
+                return;
+
+            case CommandIDs::showAbout:
+                result.setInfo ("About " + juce::String (JUCE_APPLICATION_NAME_STRING),
+                                "Version and credits", "General", 0);
+                return;
+
+            case CommandIDs::windowMinimize:
+                result.setInfo ("Minimize", "Minimize the window", "Window", 0);
                 result.addDefaultKeypress ('m', juce::ModifierKeys::commandModifier);
+                return;
+
+            case CommandIDs::windowZoom:
+                result.setInfo ("Zoom", "Zoom the window", "Window", 0);
                 return;
 
             default:
@@ -272,6 +350,20 @@ public:
                     content->addMarkerNow();
                 return true;
 
+            case CommandIDs::showAbout:
+                showAboutBox();
+                return true;
+
+            case CommandIDs::windowMinimize:
+                if (mainWindow != nullptr)
+                    mainWindow->setMinimised (true);
+                return true;
+
+            case CommandIDs::windowZoom:
+                if (mainWindow != nullptr)
+                    mainWindow->setFullScreen (! mainWindow->isFullScreen());
+                return true;
+
             default:
                 return JUCEApplication::perform (info);
         }
@@ -292,8 +384,28 @@ public:
     }
 
 private:
+    void showAboutBox()
+    {
+        if (aboutWindow != nullptr)
+        {
+            aboutWindow->toFront (true);
+            return;
+        }
+
+        juce::DialogWindow::LaunchOptions launch;
+        launch.content.setOwned (new AboutBoxComponent());
+        launch.dialogTitle = "About " + juce::String (JUCE_APPLICATION_NAME_STRING);
+        launch.dialogBackgroundColour = pnam::Palette::get (pnam::Palette::panelBackground);
+        launch.escapeKeyTriggersCloseButton = true;
+        launch.useNativeTitleBar = true;
+        launch.resizable = false;
+
+        aboutWindow = launch.launchAsync();
+    }
+
     juce::ApplicationCommandManager commandManager;
     std::unique_ptr<PinkNoiseAudioMonitorWindow> mainWindow;
+    juce::Component::SafePointer<juce::DialogWindow> aboutWindow;
 };
 
 } // namespace pnam

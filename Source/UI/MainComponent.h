@@ -176,7 +176,8 @@ private:
 
     void startAudio();                       // engine.start(); statusBar/buttons
     void stopAudio();                        // stops logging first if active
-    void startLogging();                     // buildSessionInfo() → sessionLogger.startSession
+    void startLogging();                     // prompt-if-needed, then beginLoggingSession
+    void beginLoggingSession();              // buildSessionInfo() → sessionLogger.startSession
     void stopLogging();
     void setLoggingPaused (bool shouldPause);// gates CSV writes; queues still drain
     void setOutputLevelDb (double newLevelDb);   // generator.setLevelDb + SessionInfo

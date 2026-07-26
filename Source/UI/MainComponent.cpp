@@ -279,7 +279,19 @@ namespace
             addAndMakeVisible (chooseFolderButton);
             chooseFolderButton.onClick = [this] { chooseLogFolder(); };
 
-            setSize (460, 312);
+            // Per-session prompting vs one fixed folder for every log.
+            addAndMakeVisible (promptEachToggle);
+            promptEachToggle.setToggleState (props.getUserSettings()
+                                                 ->getBoolValue ("promptLogEachSession", false),
+                                             juce::dontSendNotification);
+            promptEachToggle.onClick = [this]
+            {
+                props.getUserSettings()->setValue ("promptLogEachSession",
+                                                   promptEachToggle.getToggleState());
+                props.getUserSettings()->saveIfNeeded();
+            };
+
+            setSize (460, 348);
         }
 
     private:
@@ -349,6 +361,8 @@ namespace
             recaptureButton.setBounds (b.removeFromTop (28));
             b.removeFromTop (6);
             chooseFolderButton.setBounds (b.removeFromTop (28));
+            b.removeFromTop (8);
+            promptEachToggle.setBounds (b.removeFromTop (24));
         }
 
         void paint (juce::Graphics& g) override
@@ -365,6 +379,7 @@ namespace
         juce::ToggleButton notifyToggle;
         juce::TextEditor seedEditor;
         juce::TextButton recaptureButton  { "Recapture Level Baseline" };
+        juce::ToggleButton promptEachToggle { "Ask for log name & location at each session start" };
         juce::TextButton chooseFolderButton { "Choose Log Folder..." };
         std::unique_ptr<juce::FileChooser> fileChooser;
     };
@@ -768,18 +783,31 @@ void MainComponent::startLogging()
     if (! engine->isRunning())
         return;
 
-    // A log name + folder is required. If it has never been set, prompt for it
-    // and continue into logging once the user has chosen.
-    if (! isLogDestinationConfigured())
+    // A log name + folder is required. Prompt when nothing has ever been set,
+    // or every time if the user prefers to pick a destination per session.
+    // Either way the chooser continues into beginLoggingSession directly —
+    // never back into startLogging, which would re-prompt forever.
+    const bool promptEverySession = appProperties.getUserSettings()
+                                        ->getBoolValue ("promptLogEachSession", false);
+
+    if (promptEverySession || ! isLogDestinationConfigured())
     {
         chooseLogDestination ([this] (bool chosen)
         {
             if (chosen)
-                startLogging();
+                beginLoggingSession();
         });
 
         return;
     }
+
+    beginLoggingSession();
+}
+
+void MainComponent::beginLoggingSession()
+{
+    if (! engine->isRunning())
+        return;
 
     markerCounter = 0;
     currentSessionInfo = buildSessionInfo();
