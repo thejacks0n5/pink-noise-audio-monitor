@@ -15,6 +15,7 @@
 
 #include "UI/MainComponent.h"
 #include "UI/DarkLookAndFeel.h"
+#include "Update/UpdateChecker.h"
 
 namespace pnam
 {
@@ -34,6 +35,7 @@ namespace CommandIDs
         toggleLogging,
         addMarker,
         showAbout,
+        checkForUpdates,
         windowMinimize,
         windowZoom
     };
@@ -162,15 +164,22 @@ public:
         // command's default keypress.
         juce::PopupMenu appleMenuItems;
         appleMenuItems.addCommandItem (&commandManager, CommandIDs::showAbout);
+        appleMenuItems.addCommandItem (&commandManager, CommandIDs::checkForUpdates);
         appleMenuItems.addSeparator();
         appleMenuItems.addCommandItem (&commandManager, CommandIDs::showPreferences);
 
         juce::MenuBarModel::setMacMainMenu (this, &appleMenuItems);
        #endif
+
+        updateChecker = std::make_unique<UpdateChecker>();
+        updateChecker->startAutomaticChecks();
     }
 
     void shutdown() override
     {
+        // First: its dialogs use the look-and-feel MainComponent owns.
+        updateChecker = nullptr;
+
        #if JUCE_MAC
         juce::MenuBarModel::setMacMainMenu (nullptr);
        #endif
@@ -238,6 +247,7 @@ public:
         commands.add (CommandIDs::toggleLogging);
         commands.add (CommandIDs::addMarker);
         commands.add (CommandIDs::showAbout);
+        commands.add (CommandIDs::checkForUpdates);
         commands.add (CommandIDs::windowMinimize);
         commands.add (CommandIDs::windowZoom);
     }
@@ -292,6 +302,11 @@ public:
             case CommandIDs::showAbout:
                 result.setInfo ("About " + juce::String (JUCE_APPLICATION_NAME_STRING),
                                 "Version and credits", "General", 0);
+                return;
+
+            case CommandIDs::checkForUpdates:
+                result.setInfo ("Check for Updates...", "Look for a newer version and offer to install it",
+                                "General", 0);
                 return;
 
             case CommandIDs::windowMinimize:
@@ -354,6 +369,11 @@ public:
                 showAboutBox();
                 return true;
 
+            case CommandIDs::checkForUpdates:
+                if (updateChecker != nullptr)
+                    updateChecker->checkNow (true);
+                return true;
+
             case CommandIDs::windowMinimize:
                 if (mainWindow != nullptr)
                     mainWindow->setMinimised (true);
@@ -405,6 +425,7 @@ private:
 
     juce::ApplicationCommandManager commandManager;
     std::unique_ptr<PinkNoiseAudioMonitorWindow> mainWindow;
+    std::unique_ptr<UpdateChecker> updateChecker;
     juce::Component::SafePointer<juce::DialogWindow> aboutWindow;
 };
 

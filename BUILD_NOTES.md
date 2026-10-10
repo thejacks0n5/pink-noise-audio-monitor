@@ -307,3 +307,45 @@ measurements.csv columns only for the channels that were monitored. The first
 overnight target from the spec: no crash, no leak, flat memory, and graceful
 recovery if the device hiccups.
 
+## 6. Releasing an update (what the in-app updater expects)
+
+The app updates itself from this repo's GitHub **releases**, not from commits:
+pushing code changes nothing for users until a release is published. Each
+running copy asks the GitHub API for the latest release shortly after launch
+and once a day, and offers to install it if its version is newer.
+
+The contract `Source/Update/UpdateChecker.cpp` depends on:
+
+- The tag is `v<major>.<minor>.<patch>` and matches `project(... VERSION ...)`
+  in `CMakeLists.txt`. Bump that first; the updater discards a download whose
+  bundle version is not the tag's.
+- The release has one asset named `*-macOS-universal.zip` that unzips to a
+  single `.app`.
+- That app is signed with the Developer ID of team `U6N5RLQS69` under the
+  hardened runtime, with the generated entitlements file (it must contain
+  `com.apple.security.device.audio-input`, or every input reads -inf). Anything
+  else, including an ad-hoc build, is rejected by the updater.
+- Notarize and staple it too, so a first-time browser download opens cleanly.
+- Drafts and pre-releases are ignored (the API's `latest` skips them).
+
+Steps, from a clean checkout of the commit being released:
+
+```sh
+cmake -B build-release -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+cmake --build build-release -j
+APP="build-release/PinkNoiseAudioMonitor_artefacts/Release/Pink Noise Audio Monitor.app"
+vtool -show-build "$APP/Contents/MacOS/Pink Noise Audio Monitor" | grep minos    # expect 12.0, twice
+codesign --force --options runtime --timestamp \
+  --entitlements build-release/PinkNoiseAudioMonitor_artefacts/JuceLibraryCode/PinkNoiseAudioMonitor.entitlements \
+  --sign "Developer ID Application" "$APP"
+ditto -c -k --keepParent "$APP" upload.zip
+xcrun notarytool submit upload.zip --keychain-profile <profile> --wait
+xcrun stapler staple "$APP"
+ditto -c -k --keepParent "$APP" PinkNoiseAudioMonitor-<version>-macOS-universal.zip
+gh release create v<version> PinkNoiseAudioMonitor-<version>-macOS-universal.zip --title "..." --notes "..."
+```
+
+A copy that was opened straight from a browser download runs from a read-only
+"translocated" path and cannot replace itself; the updater then shows the new
+version in Finder instead. Keeping the app in `/Applications` avoids that.
+

@@ -70,6 +70,13 @@ Namespace `pnam` throughout. Modules under `Source/`:
 - `Logging/CsvWriter` + `Logging/SessionLogger` — message-thread CSV writers; per-session folder with
   `measurements.csv`, `events.csv`, `session_info.txt`.
 - `Notifications/NotificationEngine` — rate-limited macOS desktop notifications.
+- `Update/UpdateChecker` — in-app updates from GitHub releases. A background thread asks the
+  GitHub API for the latest release, downloads its `*-macOS-universal.zip`, unpacks it with `ditto`
+  and accepts it only if `codesign` confirms our Developer ID team + bundle id and the bundle's
+  version is the newer one promised. The message thread then asks the user; installing is done by a
+  detached shell script after the app quits. Checks run shortly after launch and daily (Release
+  builds only), plus Check for Updates... in the application menu. **It never installs or quits on
+  its own** — an update must not be able to end an overnight run. Release contract: `BUILD_NOTES.md` §6.
 - `UI/*` — `DarkLookAndFeel`, `LevelMeterComponent`, `WaveformDisplay`, `EventLogComponent`,
   `TopStatusBar`, `TransportControls`, and `MainComponent` (the integration hub that owns everything).
   `TopStatusBar`'s OUT/IN/CH/RATE/BUFFER cells are click-to-edit: they fire `onCellClicked`, and
