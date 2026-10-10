@@ -546,7 +546,12 @@ void UpdateChecker::installAndRelaunch (const juce::File& newApp, const juce::St
 
     juce::ChildProcess launcher;
 
-    if (! script.replaceWithText (scriptText)
+    // Once the script is launched this process quits and the script is the only
+    // thing that will reopen the app, so it is syntax-checked first. (Unix line
+    // endings are spelled out: replaceWithText defaults to CRLF, which sh
+    // cannot parse.)
+    if (! script.replaceWithText (scriptText, false, false, "\n")
+        || runTool ({ "/bin/sh", "-n", script.getFullPathName() }, 10000) != 0
         || ! launcher.start ({ "/bin/sh", "-c", "/bin/sh \"$0\" \"$1\" \"$2\" \"$3\" > \"$4\" 2>&1 &",
                                script.getFullPathName(),
                                juce::String ((int) ::getpid()),
