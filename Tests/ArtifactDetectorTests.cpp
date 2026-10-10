@@ -746,6 +746,95 @@ void reportFloors()
     }
 }
 
+/** The figure the live delay monitor shows, and the arithmetic its
+    calibration relies on: (device in the path) - (interface alone). */
+void testDelayMeasurement()
+{
+    std::printf ("\n  Delay measurement (what the delay monitor shows), realistic path\n");
+
+    struct Case { double fs; double delayMs; };
+
+    for (const auto& c : { Case { 48000.0, 2.0 },    Case { 48000.0, 22.93 },  Case { 48000.0, 300.0 },
+                           Case { 48000.0, 600.0 },  Case { 44100.0, 300.0 },  Case { 96000.0, 300.0 },
+                           Case { 192000.0, 300.0 } })
+    {
+        Sim sim;
+        sim.prepare (c.fs, 512, 1, true);
+        sim.paths[0].delaySamples = c.delayMs * c.fs / 1000.0 + 0.37;
+        sim.run (10.0);
+
+        const double trueMs = sim.paths[0].delaySamples * 1000.0 / c.fs;
+        const double gotMs  = sim.detector.getLatencyMs (0);
+
+        std::printf ("      %5.1f kHz, path delay %8.3f ms -> measured %8.3f ms (error %+.3f ms), aligned=%d\n",
+                     c.fs / 1000.0, trueMs, gotMs, gotMs - trueMs, (int) sim.detector.isAligned (0));
+        check (sim.detector.isAligned (0), "aligned within 10 s");
+        check (std::abs (gotMs - trueMs) < 0.05, "measured delay within 0.05 ms of the path");
+        check (sim.events.empty(), "no events");
+    }
+
+    {
+        // Calibrate on the interface alone, then put a device with exactly
+        // 300 ms of delay in the path (no gap in the signal), then take it out.
+        Sim sim;
+        sim.prepare (48000.0, 512, 1, true);
+        sim.paths[0].delaySamples = 1100.37;
+        sim.run (10.0);
+
+        const double calibrationMs = sim.detector.getLatencyMs (0);
+
+        const auto settle = [&sim] (double expectedMs)
+        {
+            // Seconds until the reading is live again and within 1 ms of where it should end up.
+            for (int half = 1; half <= 40; ++half)
+            {
+                sim.run (0.5);
+
+                if (sim.detector.isAligned (0) && std::abs ((double) sim.detector.getLatencyMs (0) - expectedMs) < 1.0)
+                    return 0.5 * half;
+            }
+
+            return -1.0;
+        };
+
+        sim.paths[0].delaySamples += 14400.0;
+        const double inSeconds = settle (calibrationMs + 300.0);
+        sim.run (3.0);
+        const double withDevice = (double) sim.detector.getLatencyMs (0) - calibrationMs;
+
+        sim.paths[0].delaySamples -= 14400.0;
+        const double outSeconds = settle (calibrationMs);
+        sim.run (3.0);
+        const double without = (double) sim.detector.getLatencyMs (0) - calibrationMs;
+
+        std::printf ("      calibrated at %.3f ms; +300 ms device in: reads %.3f ms after %.1f s; device out: reads %.3f ms after %.1f s\n",
+                     calibrationMs, withDevice, inSeconds, without, outSeconds);
+        check (inSeconds > 0.0 && inSeconds <= 8.0, "follows the device going in within 8 s");
+        check (std::abs (withDevice - 300.0) < 0.02, "reads 300 ms to within 0.02 ms");
+        check (outSeconds > 0.0 && outSeconds <= 8.0, "follows it coming out within 8 s");
+        check (std::abs (without) < 0.02, "and returns to 0 to within 0.02 ms");
+
+        // What the swap leaves in the log: one timing slip each way, nothing else.
+        std::printf ("      events from the two swaps:\n");
+        sim.dump ("        ");
+        check (sim.count (EventType::TimingSlip, 0) == 2 && sim.events.size() == 2,
+               "each swap is logged as one timing slip and nothing else");
+    }
+
+    {
+        // Beyond what can be found: must not show a wrong number.
+        Sim sim;
+        sim.prepare (48000.0, 512, 1, true);
+        sim.paths[0].delaySamples = 0.9 * 48000.0;
+        sim.run (12.0);
+        std::printf ("      path delay 900 ms (beyond the ~0.68 s search range) -> aligned=%d\n", (int) sim.detector.isAligned (0));
+        check (! sim.detector.isAligned (0), "not reported as aligned");
+        sim.dump ("        ");
+        check (sim.count (EventType::SignalMismatch, 0, eventCodeStart) == 1 && sim.events.size() == 1,
+               "logged as one signal mismatch");
+    }
+}
+
 void benchmark()
 {
     std::printf ("\n  Cost on this machine (audio-thread work only, every channel aligned and running)\n");
@@ -1069,6 +1158,7 @@ int main (int argc, char** argv)
     if (wanted ("benign"))    testThingsThatAreNotArtifacts();
     if (wanted ("mismatch"))  testMismatchAndGarbage();
     if (wanted ("channels"))  testManyChannels();
+    if (wanted ("delay"))     testDelayMeasurement();
     if (wanted ("review"))    testReviewRegressions();
     if (wanted ("floor"))     reportFloors();
     if (wanted ("bench"))     benchmark();

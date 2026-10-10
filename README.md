@@ -57,6 +57,11 @@ count) and **signal mismatch** (the return is not the signal that was sent).
 `measurements.csv` also records each input's round-trip latency and how much of
 the return is not the reference.
 
+**Live delay monitor.** The DELAY strip shows each input's round-trip delay as
+it runs. Cable the output straight to the input, press Calibrate to zero out
+the interface's own latency, then put a device or system in the path to read
+its delay in milliseconds and samples (up to about 0.68 s). `BUILD_NOTES.md` §8.
+
 Limits worth knowing before trusting a clean log: pure mains hum below about
 200 Hz is not reliably reported, and a compressor or limiter in the path makes
 artifact detection unusable (switch it off in Settings). `BUILD_NOTES.md` §7

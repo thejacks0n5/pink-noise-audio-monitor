@@ -231,6 +231,12 @@ struct SessionInfo
         monitored would report a permanent critical dropout and set dropout_flag
         on every row. Levels are still measured and logged either way. */
     juce::Array<bool> inputMonitored;
+
+    /** inputDelayOffsetMs[i] = the user's delay calibration for input i: the
+        round-trip latency of the interface on its own (measured with the
+        output cabled straight to the input), subtracted from the measured
+        latency to give the delay of whatever is in the path. 0 = uncalibrated. */
+    juce::Array<double> inputDelayOffsetMs;
     juce::String inputDeviceName;          ///< As reported by juce::AudioDeviceManager.
     juce::String outputDeviceName;
     uint64_t     pinkNoiseSeed   { 0 };    ///< Seed given to PinkNoiseGenerator (deterministic replay).

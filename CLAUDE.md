@@ -107,6 +107,14 @@ Namespace `pnam` throughout. Modules under `Source/`:
   menu (`MenuBarModel` + `ApplicationCommandManager`). **Preferences lives in the application menu
   (Cmd-,), not on a transport button** — macOS renders it as "Settings…". `MainComponent::openSettings`
   and `openAudioDeviceSetup` are public so the menu can drive them.
+- `UI/DelayMonitorComponent` — the DELAY strip under the transport: one cell per input showing the
+  detector's round-trip latency minus a calibration offset (`ArtifactDetector::isAligned` /
+  `getLatencyMs`, polled each tick). Calibrate with the output cabled straight to the input and the
+  readout becomes the delay of whatever is then put in the path. `MainComponent` owns the offsets
+  and saves them **per device configuration** (settings key `delayOffsetsMs|out|in|rate|buffer`),
+  because an interface's own latency changes with sample rate and buffer size (UMC404HD at 48 kHz:
+  22.93 ms at 512, 12.26 ms at 256). `measurements.csv` carries both `_latency_ms` (as measured)
+  and `_delay_ms` (minus the offset); a calibration change mid-session is an Info row.
 - Theme and icon: the palette is the `Palette` constants in `UI/DarkLookAndFeel.h` (blue accent
   `#3391FF`, matched to the icon; the reference trace and Info rows are deliberately NOT blue so
   they cannot be confused with it). The icon is a compiled asset catalog, `Resources/Assets.car`
@@ -133,7 +141,8 @@ About 2.5 minutes in Release (do not run it in Debug). Exit code = failed checks
 generator through a simulated path into the real `ArtifactDetector`, injects faults at known times
 and checks each is reported once, on the right channel, at the right time, and that 80 minutes of
 clean signal at five rate/buffer combinations reports nothing. A single test group can be run by
-name (`clean`, `clicks`, `slips`, `noise`, `benign`, `mismatch`, `channels`, `floor`, `bench`).
+name (`clean`, `clicks`, `slips`, `noise`, `benign`, `mismatch`, `channels`, `delay`, `review`,
+`floor`, `bench`).
 The level detectors (`EventDetector`) and the logger have no in-repo tests yet.
 
 ## Conventions

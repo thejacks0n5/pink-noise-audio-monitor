@@ -144,6 +144,11 @@ public:
         records wait for the second sighting. */
     void setLiveAudioClock (double elapsedSecondsNow) noexcept;
 
+    /** MESSAGE THREAD. The delay calibration changed mid-session: rows from
+        here on use the new offsets for their `_delay_ms` column. (The offsets a
+        session starts with travel in SessionInfo::inputDelayOffsetMs.) */
+    void setInputDelayOffsetsMs (const juce::Array<double>& offsetsMs);
+
     /** Appends one row to measurements.csv (no-op when inactive).
         Called from the UI timer's measurement drain. */
     void logMeasurement (const Measurement& m);
@@ -190,6 +195,7 @@ public:
         are omitted entirely — both header and rows consult this, so the two can
         never disagree about the column layout. */
     static bool isInputLogged (const SessionInfo&, int channelIndex);
+    static double delayOffsetMs (const SessionInfo& info, int channelIndex);
 
     //==========================================================================
     /** Invoked (on the message thread) when a CSV write/flush fails after

@@ -314,6 +314,7 @@ void ArtifactDetector::resetModel (Channel& c) noexcept
         c.acqState.store ((int) AcqState::idle, std::memory_order_release);
 
     c.lockedAtomic.store (false, std::memory_order_relaxed);
+    c.alignedAtomic.store (false, std::memory_order_relaxed);
 
     if (c.noise.phase == Condition::Phase::pending)
         c.noise = {};
@@ -642,6 +643,7 @@ void ArtifactDetector::dropLock (int, Channel& c, double now, bool reportable) n
 {
     c.locked = false;
     c.lockedAtomic.store (false, std::memory_order_relaxed);
+    c.alignedAtomic.store (false, std::memory_order_relaxed);
     c.highResidualSinceSeconds = -1.0;
 
     if (c.lockVerified || c.unlockedSinceSeconds < 0.0)
@@ -1216,6 +1218,7 @@ void ArtifactDetector::processChannel (int ch, const float* input, int n, bool s
         }
 
         c.lockVerified = true;
+        c.alignedAtomic.store (true, std::memory_order_relaxed);
         c.unlockedSinceSeconds = -1.0;
 
         if (! c.everLocked)
@@ -1652,6 +1655,12 @@ bool ArtifactDetector::isLocked (int inputChannel) const noexcept
 {
     return juce::isPositiveAndBelow (inputChannel, maxChannels)
         && channels[(size_t) inputChannel].lockedAtomic.load (std::memory_order_relaxed);
+}
+
+bool ArtifactDetector::isAligned (int inputChannel) const noexcept
+{
+    return juce::isPositiveAndBelow (inputChannel, maxChannels)
+        && channels[(size_t) inputChannel].alignedAtomic.load (std::memory_order_relaxed);
 }
 
 float ArtifactDetector::getLatencyMs (int inputChannel) const noexcept

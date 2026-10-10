@@ -110,6 +110,7 @@
 #include "LevelMeterComponent.h"
 #include "WaveformDisplay.h"
 #include "EventLogComponent.h"
+#include "DelayMonitorComponent.h"
 
 namespace pnam
 {
@@ -466,6 +467,25 @@ private:
     juce::Component::SafePointer<juce::AlertWindow> confirmWindow;
 
     //==========================================================================
+    // Delay monitor: the detector's round-trip latency per input, minus a
+    // calibration offset. The offsets belong to a device configuration (an
+    // interface's own latency changes with sample rate and buffer size), so
+    // they are saved under a key naming the devices, rate and buffer, and the
+    // set for whatever is live is loaded whenever that changes.
+    void updateDelayMonitor();                       // every timer tick
+    void calibrateDelay();                           // offsets := current round trips
+    void clearDelayCalibration();
+    void editDelayOffset (int input);                // type an offset
+    void applyDelayOffsets (juce::Array<double> newOffsetsMs, const juce::String& reason);
+    void loadDelayOffsets();                         // for the live configuration
+    void saveDelayOffsets();
+    juce::String delayCalibrationKey() const;        // empty when no device is open
+
+    juce::Array<double> inputDelayOffsetMs;          // per active input
+    juce::String        delayCalibrationKeyLoaded;
+    juce::Component::SafePointer<juce::AlertWindow> offsetWindow;
+
+    //==========================================================================
     // 1. Theme (constructed first, destroyed last)
     DarkLookAndFeel lookAndFeel;
 
@@ -488,6 +508,7 @@ private:
     LevelMeterComponent inputMeter { LevelMeterComponent::Role::input,     "INPUT" };
     WaveformDisplay    waveform;
     EventLogComponent  eventLog;
+    DelayMonitorComponent delayMonitor;
 
     // Modeless windows (SafePointer: user can close them directly)
     juce::Component::SafePointer<juce::DialogWindow> deviceSetupWindow;

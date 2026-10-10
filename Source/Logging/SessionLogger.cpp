@@ -183,6 +183,11 @@ bool SessionLogger::startSession (const juce::File& baseFolder, const SessionInf
              << "\n";
     }
 
+    // The delay calibration in force when the session started (delay_ms =
+    // latency_ms minus this). A change mid-session is recorded in events.csv.
+    for (int ch = 0; ch < juce::jlimit (0, maxChannels, activeInfo.numInputChannels); ++ch)
+        text << "inputDelayOffsetMs" << (ch + 1) << ": " << juce::String (delayOffsetMs (activeInfo, ch), 3) << "\n";
+
     infoFile.replaceWithText (text);
 
     active = true;
@@ -422,6 +427,13 @@ void SessionLogger::logMeasurement (const Measurement& m)
         // reference; an empty cell means "not aligned", never "zero".
         const bool aligned = valid && m.artifactAligned[ch];
         row.add (aligned ? juce::String (m.latencyMs[ch], 3) : juce::String());
+
+        double delayMs = (double) m.latencyMs[ch] - delayOffsetMs (activeInfo, ch);
+
+        if (std::abs (delayMs) < 0.0005)
+            delayMs = 0.0;      // not "-0.000"
+
+        row.add (aligned ? juce::String (delayMs, 3) : juce::String());
         row.add (aligned ? formatDb (m.residualDb[ch])        : juce::String());
         row.add (valid ? juce::String (m.clickCount[ch])      : juce::String());
     }
@@ -728,6 +740,17 @@ bool SessionLogger::amendEventDescription (double elapsedSeconds, EventType type
     return false;
 }
 
+void SessionLogger::setInputDelayOffsetsMs (const juce::Array<double>& offsetsMs)
+{
+    activeInfo.inputDelayOffsetMs = offsetsMs;
+}
+
+double SessionLogger::delayOffsetMs (const SessionInfo& info, int channelIndex)
+{
+    return juce::isPositiveAndBelow (channelIndex, info.inputDelayOffsetMs.size())
+             ? info.inputDelayOffsetMs[channelIndex] : 0.0;
+}
+
 //==============================================================================
 juce::String SessionLogger::composeDescription (const Event& e)
 {
@@ -935,7 +958,8 @@ juce::StringArray SessionLogger::getMeasurementCsvHeader (const SessionInfo& inf
         header.add (n + "_rms_db");
         header.add (n + "_gain_diff_db");
         header.add (n + "_clip_count");
-        header.add (n + "_latency_ms");
+        header.add (n + "_latency_ms");   // round trip as measured
+        header.add (n + "_delay_ms");     // minus the delay calibration offset
         header.add (n + "_residual_db");
         header.add (n + "_click_count");
     }

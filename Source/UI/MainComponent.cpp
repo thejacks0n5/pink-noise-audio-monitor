@@ -626,6 +626,11 @@ MainComponent::MainComponent()
     addAndMakeVisible (inputMeter);
     addAndMakeVisible (waveform);
     addAndMakeVisible (eventLog);
+    addAndMakeVisible (delayMonitor);
+
+    delayMonitor.onCalibrate  = [this] { calibrateDelay(); };
+    delayMonitor.onClear      = [this] { clearDelayCalibration(); };
+    delayMonitor.onEditOffset = [this] (int input) { editDelayOffset (input); };
 
     refMeter.setSource (&engine->getAnalysis());
     inputMeter.setSource (&engine->getAnalysis());
@@ -687,6 +692,7 @@ MainComponent::~MainComponent()
 
     // Nothing may ask or report from here on: close any open alert/confirm
     // (their callbacks are not called) and stop write errors raising new ones.
+    offsetWindow.deleteAndZero();
     confirmWindow.deleteAndZero();
     errorBox.close();
     sessionLogger.onLoggingError = nullptr;
@@ -726,6 +732,9 @@ void MainComponent::resized()
     area.removeFromTop (8);
 
     transport.setBounds (area.removeFromTop (TransportControls::preferredHeight));
+    area.removeFromTop (8);
+
+    delayMonitor.setBounds (area.removeFromTop (DelayMonitorComponent::preferredHeight));
     area.removeFromTop (8);
 
     const int eventLogHeight = juce::jlimit (140, 280,
@@ -907,6 +916,206 @@ void MainComponent::updateMetersAndWaveform()
     }
 
     waveform.refresh();
+    updateDelayMonitor();
+}
+
+//==============================================================================
+void MainComponent::updateDelayMonitor()
+{
+    int outs = 0, ins = 0;
+    getChannelCounts (outs, ins);
+
+    auto& artifacts = engine->getArtifactDetector();
+    const bool running = engine->isRunning();
+    const bool detecting = artifacts.getSettings().enabled;
+
+    delayMonitor.setSampleRate (engine->getSampleRate());
+
+    for (int i = 0; i < ins; ++i)
+    {
+        using State = DelayMonitorComponent::State;
+
+        const bool monitored = i >= inputMonitored.size() || inputMonitored[i];
+        const auto state = ! running                 ? State::stopped
+                         : ! detecting               ? State::detectionOff
+                         : ! monitored               ? State::notMonitored
+                         : artifacts.isAligned (i)   ? State::aligned
+                                                     : State::searching;
+
+        delayMonitor.setReading (i, state, (double) artifacts.getLatencyMs (i));
+    }
+}
+
+juce::String MainComponent::delayCalibrationKey() const
+{
+    const auto setup = engine->getDeviceManager().getAudioDeviceSetup();
+
+    if (engine->getDeviceManager().getCurrentAudioDevice() == nullptr
+        || (setup.outputDeviceName.isEmpty() && setup.inputDeviceName.isEmpty()))
+        return {};
+
+    return "delayOffsetsMs|" + setup.outputDeviceName + "|" + setup.inputDeviceName
+             + "|" + juce::String (juce::roundToInt (setup.sampleRate)) + "|" + juce::String (setup.bufferSize);
+}
+
+void MainComponent::loadDelayOffsets()
+{
+    int outs = 0, ins = 0;
+    getChannelCounts (outs, ins);
+
+    const auto key = delayCalibrationKey();
+    auto offsets = inputDelayOffsetMs;
+
+    // (No device open is not a configuration: keep what is loaded, so a device
+    // that closes and reopens during a change does not clear and restore it.)
+    if (key.isNotEmpty() && key != delayCalibrationKeyLoaded)
+    {
+        // A different interface, sample rate or buffer size: its latency is not
+        // the one that was calibrated, so the offsets that go with it are
+        // loaded instead (none, if this configuration was never calibrated).
+        offsets.clearQuick();
+
+        if (auto* settings = appProperties.getUserSettings())
+            for (const auto& token : juce::StringArray::fromTokens (settings->getValue (key), ",", {}))
+                offsets.add (token.getDoubleValue());
+
+        const bool hadKey = delayCalibrationKeyLoaded.isNotEmpty();
+        delayCalibrationKeyLoaded = key;
+
+        offsets.resize (ins);
+        applyDelayOffsets (offsets, hadKey ? "Delay calibration follows the audio settings" : juce::String());
+        return;
+    }
+
+    if (offsets.size() != ins)
+    {
+        offsets.resize (ins);
+        inputDelayOffsetMs = offsets;
+        delayMonitor.setOffsetsMs (inputDelayOffsetMs);
+    }
+}
+
+void MainComponent::applyDelayOffsets (juce::Array<double> newOffsetsMs, const juce::String& reason)
+{
+    int outs = 0, ins = 0;
+    getChannelCounts (outs, ins);
+    newOffsetsMs.resize (ins);
+
+    // What moved, in the user's channel names, for the log.
+    juce::StringArray changes;
+
+    for (int i = 0; i < ins; ++i)
+    {
+        const double before = i < inputDelayOffsetMs.size() ? inputDelayOffsetMs[i] : 0.0;
+
+        if (std::abs (newOffsetsMs[i] - before) >= 0.0005)
+            changes.add ((i < inputChannelNames.size() ? inputChannelNames[i] : "In " + juce::String (i + 1))
+                           + " offset " + juce::String (before, 3) + " -> " + juce::String (newOffsetsMs[i], 3) + " ms");
+    }
+
+    inputDelayOffsetMs = newOffsetsMs;
+    delayMonitor.setOffsetsMs (inputDelayOffsetMs);
+
+    if (sessionLogger.isSessionActive())
+        sessionLogger.setInputDelayOffsetsMs (inputDelayOffsetMs);
+
+    if (reason.isNotEmpty() && ! changes.isEmpty())
+        logSessionNote (reason + ": " + changes.joinIntoString ("; "), Severity::Info);
+}
+
+void MainComponent::calibrateDelay()
+{
+    auto offsets = inputDelayOffsetMs;
+    bool any = false;
+
+    for (int i = 0; i < offsets.size(); ++i)
+    {
+        if (delayMonitor.isAligned (i))
+        {
+            offsets.set (i, delayMonitor.getRoundTripMs (i));
+            any = true;
+        }
+    }
+
+    if (! any)
+        return;
+
+    applyDelayOffsets (offsets, "Delay calibrated (current round trip taken as zero)");
+
+    saveDelayOffsets();
+}
+
+void MainComponent::clearDelayCalibration()
+{
+    juce::Array<double> none;
+    none.resize (inputDelayOffsetMs.size());
+    applyDelayOffsets (none, "Delay calibration cleared");
+    saveDelayOffsets();
+}
+
+void MainComponent::saveDelayOffsets()
+{
+    // Under the key for this interface at this rate and buffer size.
+    auto* settings = appProperties.getUserSettings();
+
+    if (settings == nullptr || delayCalibrationKeyLoaded.isEmpty())
+        return;
+
+    juce::StringArray tokens;
+    bool any = false;
+
+    for (const double offset : inputDelayOffsetMs)
+    {
+        tokens.add (juce::String (offset, 4));
+        any = any || ! juce::exactlyEqual (offset, 0.0);
+    }
+
+    if (any)
+        settings->setValue (delayCalibrationKeyLoaded, tokens.joinIntoString (","));
+    else
+        settings->removeValue (delayCalibrationKeyLoaded);
+
+    settings->saveIfNeeded();
+}
+
+void MainComponent::editDelayOffset (int input)
+{
+    if (! juce::isPositiveAndBelow (input, inputDelayOffsetMs.size()))
+        return;
+
+    offsetWindow.deleteAndZero();
+
+    const auto name = input < inputChannelNames.size() ? inputChannelNames[input] : "In " + juce::String (input + 1);
+
+    auto* box = new juce::AlertWindow ("Delay offset for " + name,
+                                       "Subtracted from the measured round trip to give the delay shown. "
+                                       "Enter the interface's own latency in milliseconds, or 0 for none.",
+                                       juce::MessageBoxIconType::NoIcon, this);
+
+    box->addTextEditor ("offset", juce::String (inputDelayOffsetMs[input], 3), "Offset (ms)");
+    box->addButton ("Set", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    box->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    offsetWindow = box;
+
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+    juce::Component::SafePointer<juce::AlertWindow> safeBox (box);
+
+    // Async: no modal loop. The modal manager deletes the box once answered.
+    box->enterModalState (true,
+                          juce::ModalCallbackFunction::create ([safeThis, safeBox, input] (int result)
+                          {
+                              if (result != 1 || safeThis == nullptr || safeBox == nullptr
+                                  || ! juce::isPositiveAndBelow (input, safeThis->inputDelayOffsetMs.size()))
+                                  return;
+
+                              const auto text = safeBox->getTextEditorContents ("offset").trim().replaceCharacter (',', '.');
+                              auto offsets = safeThis->inputDelayOffsetMs;
+                              offsets.set (input, juce::jlimit (-1000.0, 10000.0, text.getDoubleValue()));
+                              safeThis->applyDelayOffsets (offsets, "Delay offset entered");
+                              safeThis->saveDelayOffsets();
+                          }),
+                          true);
 }
 
 void MainComponent::updateStatusBar()
@@ -2658,6 +2867,7 @@ SessionInfo MainComponent::buildSessionInfo() const
         info.referenceOutputForInput.add (juce::jlimit (0, juce::jmax (0, outs - 1),
                                                         ch < referenceOutputForInput.size() ? referenceOutputForInput[ch] : 0));
         info.inputMonitored.add (ch < inputMonitored.size() ? inputMonitored[ch] : true);
+        info.inputDelayOffsetMs.add (ch < inputDelayOffsetMs.size() ? inputDelayOffsetMs[ch] : 0.0);
     }
     info.pinkNoiseSeed     = engine->getGenerator().getSeed();
     info.outputLevelDb     = engine->getGenerator().getLevelDb();
@@ -2810,6 +3020,15 @@ void MainComponent::refreshChannelConfig()
 
     eventLog.setChannelNames (outputChannelNames, inputChannelNames);
 
+    // One delay cell per input the device has, and the calibration that goes
+    // with this device, rate and buffer size.
+    juce::StringArray liveInputNames;
+
+    for (int i = 0; i < ins; ++i)
+        liveInputNames.add (inputChannelNames[i]);
+
+    delayMonitor.setChannels (liveInputNames);
+    loadDelayOffsets();
 }
 
 void MainComponent::loadChannelConfig()

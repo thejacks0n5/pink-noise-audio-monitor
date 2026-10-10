@@ -148,6 +148,10 @@ public:
 
     /** ANY THREAD (atomics) — for the UI. */
     bool  isLocked (int inputChannel) const noexcept;
+
+    /** True once the alignment has been verified (the model converged on it),
+        which is when getLatencyMs() is a measurement rather than a candidate. */
+    bool  isAligned (int inputChannel) const noexcept;
     float getLatencyMs (int inputChannel) const noexcept;
     float getResidualDb (int inputChannel) const noexcept;
 
@@ -295,6 +299,7 @@ private:
 
         // --- published ------------------------------------------------------
         std::atomic<bool>  lockedAtomic { false };
+        std::atomic<bool>  alignedAtomic { false };
         std::atomic<float> latencyMsAtomic { 0.0f };
         std::atomic<float> residualDbAtomic { silenceFloorDb };
 

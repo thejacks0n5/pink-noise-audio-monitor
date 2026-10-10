@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.22)
 # machine's own macOS version (and will not launch on anything older).
 set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS deployment target")
 
-project(PinkNoiseAudioMonitor VERSION 1.1.0 LANGUAGES C CXX)
+project(PinkNoiseAudioMonitor VERSION 1.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -524,3 +524,50 @@ NOT verified on hardware (simulated only, or not exercised at all):
   twelve minutes. The 60-hour run in July was 1.0.0.
 - An Intel Mac, or any macOS older than the build machine's.
 
+## 8. Delay monitor and calibration (1.2.0)
+
+The DELAY strip under the transport shows, live, how long the noise takes to
+come back on each input. The number is the round-trip latency the artifact
+detector already measures to align the return (§7), so there is nothing extra
+running; artifact detection has to be on.
+
+To measure a device or a system:
+
+1. Cable the interface's output straight to its input. The strip reads the
+   interface's own round trip ("round trip, not calibrated").
+2. Press **Calibrate**. That round trip becomes the offset and the strip reads
+   0.00 ms. (**Offset...** types one in instead; **Clear** removes it.)
+3. Put the device in the path. The strip reads its delay, in ms and samples,
+   and follows a change within two or three seconds.
+
+Things to know:
+
+- The calibration belongs to one interface at one sample rate and buffer size,
+  and is saved and recalled per configuration. Change the buffer and you are on
+  a different (probably uncalibrated) configuration; the strip says so. On the
+  UMC404HD at 48 kHz the round trip is 22.93 ms at 512 samples and 12.26 ms at
+  256.
+- Delays up to about 0.68 s can be found. Beyond that the return is never
+  aligned: the strip shows "finding the return..." rather than a wrong number,
+  and after 3 s a Signal mismatch is logged.
+- The figure is the broadband arrival time between about 200 Hz and 16 kHz.
+  Through something with strongly frequency-dependent delay (a crossover, a
+  steep filter) it is where most of the energy arrives, not a per-band figure.
+- Swapping the device in or out is itself an event to the artifact detector: a
+  Timing slip row with the size of the step. That is expected.
+- `measurements.csv` has `_latency_ms` (as measured) and `_delay_ms` (minus the
+  offset) per input; `session_info.txt` records the offsets the session started
+  with, and a change mid-session is an Info row in `events.csv`.
+
+Verified: in the test rig, path delays of 2, 23, 300 and 600 ms at 44.1 to
+192 kHz are measured to within 0.015 ms; after calibrating, a device adding
+exactly 300 ms reads 300.000 ms 2.5 s after it goes in and 0.000 ms 2.5 s after
+it comes out; a 900 ms path is not reported as aligned. On the UMC404HD
+(2026-10-10, Out 1 to In 1, -40 dBFS): the strip read 22.93 ms; Calibrate took
+it to 0.00; a typed offset of 20 read 2.93; the calibration survived a relaunch
+and the round trip repeated to 0.001 ms across three device starts; at a
+256-sample buffer it read 12.26 ms, uncalibrated. NOT verified on hardware: a
+real device with a known delay in the path, more than one input, and the
+calibration switching when the buffer or rate is changed while running (only
+the same code path at launch was exercised).
+
