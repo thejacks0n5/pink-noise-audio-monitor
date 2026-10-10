@@ -11,11 +11,15 @@ cmake_minimum_required(VERSION 3.22)
 #  See README.md for full build/run instructions.
 # ==============================================================================
 
+# Must be set before project(): project() creates an empty cache entry for it,
+# after which a non-FORCE set() is ignored and the app targets the build
+# machine's own macOS version (and will not launch on anything older).
+set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS deployment target")
+
 project(PinkNoiseAudioMonitor VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS deployment target")
 
 # Apple Silicon by default; override with -DCMAKE_OSX_ARCHITECTURES=x86_64 if needed.
 if (APPLE AND NOT CMAKE_OSX_ARCHITECTURES)

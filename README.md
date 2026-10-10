@@ -10,50 +10,43 @@ This README covers building and running the **Version One foundation** — the
 scaffolding, core DSP/analysis engine, logging, and UI are all present; this
 is the base you build and iterate on from here.
 
-## Prerequisites
+## Quick start on another Mac
 
-- macOS 12 (Monterey) or later, Apple Silicon.
-- Xcode (full app, not just the command line tools) — the CMake build below
-  generates an Xcode project and needs the Xcode toolchain to compile it.
-  Install/update from the App Store, then run once:
-  ```sh
-  xcode-select --install
-  sudo xcodebuild -license accept
-  ```
-- CMake 3.22 or later:
-  ```sh
-  brew install cmake
-  ```
-- A network connection the first time you configure — CMake's
-  `FetchContent` pulls the JUCE framework (tag `8.0.4`) directly from GitHub
-  into `build/_deps/`.
+Runs on macOS 12 or later, Apple Silicon or Intel (the release build is universal).
 
-## Building
-
-From the project root (the directory containing `CMakeLists.txt`):
+**Option A — download the built app.** Grab
+`PinkNoiseAudioMonitor-1.0.0-macOS-universal.zip` from the repo's
+[Releases](https://github.com/thejacks0n5/pink-noise-audio-monitor/releases)
+page and unzip it. The app is ad-hoc signed, not notarized, so a browser
+download is quarantined by Gatekeeper. Clear that once, then open it normally:
 
 ```sh
-# 1. Configure — generates an Xcode project under build/ and fetches JUCE
-cmake -B build -G Xcode -DCMAKE_BUILD_TYPE=Release
-
-# 2. Build from the command line...
-cmake --build build --config Release
-
-# ...or open the generated Xcode project and build/run from the IDE:
-open build/PinkNoiseAudioMonitor.xcodeproj
+xattr -dr com.apple.quarantine "Pink Noise Audio Monitor.app"
 ```
 
-The first configure step will take a few minutes while JUCE is cloned. It
-only needs to happen once (or again if you delete `build/`).
-
-If you prefer a plain Makefile/Ninja build instead of an Xcode project
-(useful for quick CLI iteration, though you'll want Xcode for signing/
-notarizing later):
+**Option B — build from source.** Needs the Xcode Command Line Tools
+(`xcode-select --install`), CMake 3.22+ (`brew install cmake`) and a network
+connection for the first configure, which fetches JUCE `8.0.4` into
+`build/_deps/`. Full Xcode is not required.
 
 ```sh
-cmake -B build-cli -G "Ninja" -DCMAKE_BUILD_TYPE=Release
-cmake --build build-cli --config Release
+git clone https://github.com/thejacks0n5/pink-noise-audio-monitor.git
+cd pink-noise-audio-monitor
+cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+cmake --build build -j
+open "build/PinkNoiseAudioMonitor_artefacts/Release/Pink Noise Audio Monitor.app"
 ```
+
+Without `CMAKE_OSX_ARCHITECTURES` the build is arm64 only, which will not run
+on an Intel Mac. The first build takes a few minutes.
+
+Settings do not travel between machines. On a new one, follow
+`BUILD_NOTES.md` §5: pick the interface and channel counts, name the channels,
+untick Monitor on unpatched inputs, set the log file (Logging menu), grant the
+microphone permission, and stop the machine sleeping.
+
+To generate an Xcode project instead (needs full Xcode with its license
+accepted): `cmake -B build -G Xcode`, then `cmake --build build --config Release`.
 
 ## Where the app lands
 
@@ -98,9 +91,9 @@ or virtual loopback so the app's own pink noise output becomes its input:
    and correlation read near 1.0. Click **Start Logging** to begin writing
    CSVs; try a brief mute or a disconnected input to confirm dropout/clipping
    events show up in the event log and get written to `events.csv`.
-4. Session folders (CSV logs) are written under
-   `~/Documents/PinkNoiseAudioMonitor/<session-id>/` by default — configurable
-   from the Settings dialog.
+4. Logging needs a named log destination first: Logging menu → **Set Log
+   File...** (Cmd-Shift-L). Each session writes a folder holding
+   `measurements.csv`, `events.csv` and `session_info.txt`.
 
 ## Notes
 
