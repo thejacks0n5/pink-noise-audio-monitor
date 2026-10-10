@@ -61,6 +61,9 @@ juce_add_gui_app(PinkNoiseAudioMonitor
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "Pink Noise Audio Monitor needs microphone access to analyse the monitored input signal."
     HARDENED_RUNTIME_ENABLED TRUE
+    # Without this entitlement a hardened-runtime (Developer ID / notarized)
+    # build is denied the input device silently: no prompt, every input -inf.
+    HARDENED_RUNTIME_OPTIONS "com.apple.security.device.audio-input"
     NEEDS_CURL               FALSE
     NEEDS_WEB_BROWSER        FALSE
 )
