@@ -17,12 +17,9 @@ Runs on macOS 12 or later, Apple Silicon or Intel (the release build is universa
 **Option A — download the built app.** Grab
 `PinkNoiseAudioMonitor-1.0.0-macOS-universal.zip` from the repo's
 [Releases](https://github.com/thejacks0n5/pink-noise-audio-monitor/releases)
-page and unzip it. The app is ad-hoc signed, not notarized, so a browser
-download is quarantined by Gatekeeper. Clear that once, then open it normally:
-
-```sh
-xattr -dr com.apple.quarantine "Pink Noise Audio Monitor.app"
-```
+page, unzip it and open it. The release build is signed with a Developer ID
+and notarized, so Gatekeeper opens it without any extra step. Allow microphone
+access when prompted, or every input reads silence.
 
 **Option B — build from source.** Needs the Xcode Command Line Tools
 (`xcode-select --install`), CMake 3.22+ (`brew install cmake`) and a network
@@ -37,6 +34,7 @@ cmake --build build -j
 open "build/PinkNoiseAudioMonitor_artefacts/Release/Pink Noise Audio Monitor.app"
 ```
 
+A source build is ad-hoc signed, which is fine on the machine that built it.
 Without `CMAKE_OSX_ARCHITECTURES` the build is arm64 only, which will not run
 on an Intel Mac. The first build takes a few minutes.
 
