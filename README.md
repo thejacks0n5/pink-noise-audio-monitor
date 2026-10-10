@@ -46,6 +46,31 @@ microphone permission, and stop the machine sleeping.
 To generate an Xcode project instead (needs full Xcode with its license
 accepted): `cmake -B build -G Xcode`, then `cmake --build build --config Release`.
 
+## What it detects
+
+Level faults, judged against the level the reference predicts: **dropouts**,
+**clipping** and **level changes**. And artifacts, judged by comparing the
+return sample by sample with the exact noise that was sent: **clicks and pops**,
+**noise** (static, hiss, crackle, buzz), **distortion** (clipping or saturation
+somewhere in the path), **timing slips** (dropped or repeated samples, with the
+count) and **signal mismatch** (the return is not the signal that was sent).
+`measurements.csv` also records each input's round-trip latency and how much of
+the return is not the reference.
+
+Limits worth knowing before trusting a clean log: pure mains hum below about
+200 Hz is not reliably reported, and a compressor or limiter in the path makes
+artifact detection unusable (switch it off in Settings). `BUILD_NOTES.md` §7
+has the full list and what has and has not been verified on real hardware.
+
+## Tests
+
+```sh
+cmake --build build --target pnam_tests -j && ./build/pnam_tests_artefacts/Release/pnam_tests
+```
+
+Runs the real generator through a simulated path into the real artifact
+detector, injecting known faults (about three minutes in a Release build).
+
 ## Where the app lands
 
 After a successful build, the app bundle is at:

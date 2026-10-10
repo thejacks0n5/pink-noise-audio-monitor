@@ -11,8 +11,11 @@
     Visual layout (left → right), each cell = tiny caption over value text,
     separated by hairline dividers; the two lamp cells draw a coloured dot:
 
-      [• AUDIO lamp+state] [• LOG lamp+state] [SESSION duration] [MODE]
+      [• AUDIO lamp+state] [• LOG lamp+state] [SESSION duration]
       [OUT device] [IN device] [CH config] [RATE] [BUFFER]        [app status…]
+
+    The MODE cell is no longer laid out: V1 has one mode, and its fixed text was
+    taking the room the app-status text (where every error message lands) needs.
 
     Colours: lamps use Palette::statusRunning / statusPaused / statusIdle /
     severityCritical (error); values textPrimary; captions textSecondary.
@@ -32,7 +35,11 @@ class TopStatusBar : public juce::Component
 {
 public:
     //==========================================================================
-    enum class EngineState  { stopped, starting, running, deviceError };
+    /** deviceLost and outputHeld are the two states a running session can be in
+        when the hardware is not doing its job: no device is delivering audio, or
+        a device is but the engine is holding the output silent after a loss.
+        Both (and deviceError) are drawn in red text, not just a red lamp. */
+    enum class EngineState  { stopped, starting, running, deviceError, deviceLost, outputHeld };
     enum class LoggingState { inactive, active, paused, writeError };
 
     /** Identifies a cell for the onCellClicked callback. The device/rate/buffer
@@ -59,8 +66,14 @@ public:
         "Monitoring", "3 critical events", "Settling…". */
     void setAppStatus (const juce::String& text);
 
+    /** A fault the user must not miss ("'UMC404HD' LOST: output held silent").
+        While non-empty it replaces the app status text and is drawn in red;
+        pass an empty string to go back to the normal status. Called every
+        timer tick with the current worst problem, or nothing — cheap. */
+    void setAlert (const juce::String& text);
+
     /** Audio engine lamp + label ("Stopped" / "Starting…" / "Running" /
-        "Device error"). */
+        "Device error" / "NO DEVICE" / "Output held"). */
     void setAudioEngineState (EngineState state);
     EngineState getAudioEngineState() const noexcept    { return engineState; }
 
@@ -69,6 +82,11 @@ public:
         setAppStatus or leave it to the session-duration cell. */
     void setLoggingState (LoggingState state);
     LoggingState getLoggingState() const noexcept       { return loggingState; }
+
+    /** While the logging state is `paused`, shows how long it has been paused
+        ("Paused 12:34") so a forgotten pause is visible from across the room.
+        Ignored in every other state. Called every timer tick — cheap. */
+    void setLoggingPausedSeconds (double seconds);
 
     void setOutputDeviceName (const juce::String& name);   // "—" when none
     void setInputDeviceName  (const juce::String& name);
@@ -89,7 +107,8 @@ public:
     void setSessionDuration (double seconds);
 
     /** Current test mode text — V1 is always "Pink noise loopback"; kept as
-        a setter so V2 modes drop in without a UI change. */
+        a setter so V2 modes drop in without a UI change. The cell is not
+        currently shown (see the layout note above). */
     void setTestMode (const juce::String& modeText);
 
     //==========================================================================
@@ -112,6 +131,7 @@ private:
         bool hasLamp = false;
         CellId id = CellId::none;
         bool interactive = false;  // draws a chevron + hover highlight
+        bool alert = false;        // value drawn in red (a fault, not a status)
     };
 
     void updateCell (Cell&, const juce::String& newValue,
@@ -125,6 +145,10 @@ private:
 
     EngineState  engineState  = EngineState::stopped;
     LoggingState loggingState = LoggingState::inactive;
+
+    // The app-status cell shows alertText (red) when there is one, else appStatusText.
+    juce::String appStatusText { "Idle" }, alertText;
+    void refreshAppStatusCell();
     double lastSampleRateHz   = 0.0;
 
     // Cell order matches the layout comment in the header block.

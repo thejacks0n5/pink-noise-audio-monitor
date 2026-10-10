@@ -9,11 +9,13 @@ A professional audio testing/monitoring app for **macOS (Apple Silicon)**, writt
 returned signal on an input, aligns/compares them, and logs audio problems (dropouts,
 clipping, level changes, …) for long overnight test sessions.
 
-**Status: V1 builds, runs and has been exercised extensively on real hardware**
-(a UMC404HD on an M3 Max), through 20+ commits of fixes, a three-way audit and a
-2-hour soak — but it has NOT yet done its defining test: a full overnight run.
-That is the next job. `BUILD_NOTES.md` is the operational record: §3b/§3c what
-was fixed and why, §5 the overnight-run checklist for a fresh machine.
+**Status:** V1 passed its defining test (a 60-hour run on a UMC404HD, July 2026:
+no crash, flat memory, monotonic clock). Since then (October 2026) it has gained
+in-app updates, artifact detection (clicks, noise, distortion, timing slips) and
+a round of reliability fixes from two code reviews. `BUILD_NOTES.md` is the
+operational record: §3b/§3c earlier fixes, §5 the overnight-run checklist, §6
+releasing, §7 artifact detection and the October fixes. **§7 lists what has and
+has not been verified on real hardware — read it before trusting a claim.**
 
 **Target machine:** Mac mini, M4 Pro (Apple Silicon). Xcode + Core Audio + a real audio
 interface (or a loopback device like BlackHole) are needed to actually run and test it.
@@ -34,9 +36,10 @@ exactly one start/end pair and is NOT re-reported across suppression or device r
 unmonitored inputs are excluded from `measurements.csv` entirely.
 
 Explicitly **out of scope for now** (later phases): FFT/spectrum, transfer function,
-frequency-response/EQ/filter detection, compression/limiting detection, delay/correlation
-alignment beyond the stub, LUFS, session reports, email/phone notifications, and the VST3
-plugin. The architecture leaves room for these, but don't build them yet.
+frequency-response/EQ/filter detection, compression/limiting detection, LUFS, session
+reports, email/phone notifications, and the VST3 plugin. The architecture leaves room
+for these, but don't build them yet. (Delay alignment is no longer out of scope: the
+artifact detector does it.)
 
 ## Architecture
 
@@ -60,8 +63,22 @@ Namespace `pnam` throughout. Modules under `Source/`:
   atomic getters the UI polls for live meters.
 - `Core/EventDetector` — audio-thread threshold checks (dropout / clip / level change) with
   debounce + rate-limiting → emits `Event`s (start/end, not per-block).
+- `Core/ArtifactDetector` — audio-thread comparison of each return against the exact reference
+  that was sent. Per monitored input it finds the round-trip delay (GCC-PHAT cross-correlation,
+  computed on a background thread from a snapshot the audio thread captures), fits a 32-tap NLMS
+  model of the path's linear response (plus one integral term for AC coupling), and inspects the
+  residual: `Click`, `Noise`, `Distortion`, `TimingSlip`, `SignalMismatch` events, and per-interval
+  latency / residual / click-count figures for `measurements.csv`. Both signals are band-limited to
+  ~200 Hz–16 kHz first, so **an artifact living only below ~200 Hz (pure mains hum, a slow thump)
+  is not reliably reported**. Gain and polarity changes, dropouts and clock drift are deliberately
+  NOT artifacts (the level detectors own those). `Tests/ArtifactDetectorTests.cpp` is its
+  fault-injection rig: change the detector, run the rig.
 - `Core/AudioEngine` — `juce::AudioDeviceManager` + IO callback: generator → output, capture input,
-  feed analysis + detection, push to queues. **No allocation or file I/O in the callback.**
+  feed artifact detection + analysis + level detection, push to queues. **No allocation or file I/O
+  in the callback.** `isRunning()` is SESSION state (start() to stop()); `isDeviceActive()` is the
+  device. After an unexpected device stop the output is held silent (so noise cannot come out of
+  whatever JUCE falls back to) until the same device returns or the UI calls
+  `clearDeviceLossSilence()`.
   Device lifecycle: `initialiseDevices (savedStateXml)` is called once from `MainComponent`'s ctor so
   a real device is open (and the user's saved choice restored) *before* Start Audio. `start()` only
   attaches the callback / reopens the last device — it must **never** call `initialiseWithDefaultDevices`,
@@ -90,15 +107,34 @@ Namespace `pnam` throughout. Modules under `Source/`:
   menu (`MenuBarModel` + `ApplicationCommandManager`). **Preferences lives in the application menu
   (Cmd-,), not on a transport button** — macOS renders it as "Settings…". `MainComponent::openSettings`
   and `openAudioDeviceSetup` are public so the menu can drive them.
+- Theme and icon: the palette is the `Palette` constants in `UI/DarkLookAndFeel.h` (blue accent
+  `#3391FF`, matched to the icon; the reference trace and Info rows are deliberately NOT blue so
+  they cannot be confused with it). The icon is a compiled asset catalog, `Resources/Assets.car`
+  (source `Resources/Assets.xcassets`), bundled by CMake with `CFBundleIconName`; see the comment
+  in `CMakeLists.txt` for why it is not `ICON_BIG` and how to rebuild it.
 
 ## The one rule that matters most (real-time safety)
 
 The audio thread (`AudioEngine::audioDeviceIOCallbackWithContext` and everything it calls) must
 **never** allocate, lock, block, write files, post notifications, or touch any `juce::Component`.
 It may only do math and push PODs into the lock-free FIFOs. All file I/O, notifications, and UI
-updates happen on the **message thread**, exclusively inside `MainComponent::timerCallback()`
-(the only place either FIFO is drained). Preserve this invariant in every change. If you need new
+updates happen on the **message thread**. The FIFOs are drained there only: in
+`MainComponent::timerCallback()`, and once at Start Audio / Start Logging so rows queued under the
+previous session are not mistaken for the new one. Preserve this invariant in every change. If you need new
 data on the UI, add a field to the POD and push it — do not reach across threads.
+
+## Tests
+
+```bash
+cmake --build build-release --target pnam_tests -j && ./build-release/pnam_tests_artefacts/Release/pnam_tests
+```
+
+About 2.5 minutes in Release (do not run it in Debug). Exit code = failed checks. It runs the real
+generator through a simulated path into the real `ArtifactDetector`, injects faults at known times
+and checks each is reported once, on the right channel, at the right time, and that 80 minutes of
+clean signal at five rate/buffer combinations reports nothing. A single test group can be run by
+name (`clean`, `clicks`, `slips`, `noise`, `benign`, `mismatch`, `channels`, `floor`, `bench`).
+The level detectors (`EventDetector`) and the logger have no in-repo tests yet.
 
 ## Conventions
 

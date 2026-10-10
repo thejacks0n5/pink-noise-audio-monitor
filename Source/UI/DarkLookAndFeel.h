@@ -5,7 +5,7 @@
     Pink Noise Audio Monitor (pnam) — application-wide dark theme.
 
     A juce::LookAndFeel_V4 subclass tuned for an overnight test-monitoring
-    tool: near-black backgrounds, low-glare desaturated steel-blue accent,
+    tool: near-black backgrounds, a clear blue accent matching the app icon,
     and unambiguous meter/severity colours (green / amber / red).
 
     Ownership / usage:
@@ -34,48 +34,48 @@ namespace pnam
 struct Palette
 {
     // -- Surfaces -------------------------------------------------------------
-    static constexpr juce::uint32 windowBackground   = 0xff0e1114; // app window
-    static constexpr juce::uint32 panelBackground    = 0xff16191d; // cards/panels
-    static constexpr juce::uint32 panelBackgroundAlt = 0xff1a1e23; // alternating rows
-    static constexpr juce::uint32 controlBackground  = 0xff1c2126; // buttons, combos, editors
-    static constexpr juce::uint32 controlHover       = 0xff242a31;
-    static constexpr juce::uint32 controlPressed     = 0xff2b323a;
-    static constexpr juce::uint32 outline            = 0xff262c33; // hairline borders
-    static constexpr juce::uint32 outlineFocused     = 0xff3c586e;
+    static constexpr juce::uint32 windowBackground   = 0xff0a0b0d; // app window
+    static constexpr juce::uint32 panelBackground    = 0xff15171b; // cards/panels
+    static constexpr juce::uint32 panelBackgroundAlt = 0xff1a1c21; // alternating rows
+    static constexpr juce::uint32 controlBackground  = 0xff23262d; // buttons, combos, editors
+    static constexpr juce::uint32 controlHover       = 0xff2b2e37;
+    static constexpr juce::uint32 controlPressed     = 0xff363a45;
+    static constexpr juce::uint32 outline            = 0xff353942; // hairline borders
+    static constexpr juce::uint32 outlineFocused     = 0xff55a4ff;
 
     // -- Text -----------------------------------------------------------------
-    static constexpr juce::uint32 textPrimary        = 0xffd7dbdf;
-    static constexpr juce::uint32 textSecondary      = 0xff8b939b;
-    static constexpr juce::uint32 textDisabled       = 0xff525a62;
-    static constexpr juce::uint32 textOnAccent       = 0xff0e1114;
+    static constexpr juce::uint32 textPrimary        = 0xffe8eaee;
+    static constexpr juce::uint32 textSecondary      = 0xffa4aab5;
+    static constexpr juce::uint32 textDisabled       = 0xff6e7480;
+    static constexpr juce::uint32 textOnAccent       = 0xff050d1a;
 
-    // -- Accent (desaturated steel blue) --------------------------------------
-    static constexpr juce::uint32 accent             = 0xff5b93b8;
-    static constexpr juce::uint32 accentDim          = 0xff3a5d75;
-    static constexpr juce::uint32 accentBright       = 0xff7fb3d3;
+    // -- Accent (the icon's blue) ---------------------------------------------
+    static constexpr juce::uint32 accent             = 0xff3391ff;
+    static constexpr juce::uint32 accentDim          = 0xff3585e6;
+    static constexpr juce::uint32 accentBright       = 0xff55a4ff;
 
     // -- Meters / signal ------------------------------------------------------
-    static constexpr juce::uint32 meterGreen         = 0xff3fae6a;
-    static constexpr juce::uint32 meterAmber         = 0xffd9a53c;
-    static constexpr juce::uint32 meterRed           = 0xffd14b4b;
-    static constexpr juce::uint32 meterTrough        = 0xff14171b; // unlit bar area
-    static constexpr juce::uint32 meterPeakTick      = 0xffe8ecef; // peak-hold line
-    static constexpr juce::uint32 meterRmsOverlay    = 0x66ffffff; // translucent RMS cap
+    static constexpr juce::uint32 meterGreen         = 0xff3bd1a9;
+    static constexpr juce::uint32 meterAmber         = 0xffffd452;
+    static constexpr juce::uint32 meterRed           = 0xffff6450;
+    static constexpr juce::uint32 meterTrough        = 0xff0e0f12; // unlit bar area
+    static constexpr juce::uint32 meterPeakTick      = 0xfff6f7f9; // peak-hold line
+    static constexpr juce::uint32 meterRmsOverlay    = 0x4dffffff; // translucent RMS cap
 
     // -- Waveform traces ------------------------------------------------------
-    static constexpr juce::uint32 traceReference     = 0xff5b93b8; // accent
-    static constexpr juce::uint32 traceInputL        = 0xff3fae6a; // green
-    static constexpr juce::uint32 traceInputR        = 0xffb87fd3; // muted violet
-    static constexpr juce::uint32 traceGrid          = 0xff20262c;
-    static constexpr juce::uint32 traceCentreLine    = 0xff2c343c;
+    static constexpr juce::uint32 traceReference     = 0xffcfd4e6; // near-white: kept clear of the blue accent
+    static constexpr juce::uint32 traceInputL        = 0xffc7eb75; // yellow-green
+    static constexpr juce::uint32 traceInputR        = 0xffa8eb75; // green
+    static constexpr juce::uint32 traceGrid          = 0xff1c1e24;
+    static constexpr juce::uint32 traceCentreLine    = 0xff2d3039;
 
     // -- Severity / status ----------------------------------------------------
-    static constexpr juce::uint32 severityInfo       = 0xff5b93b8;
-    static constexpr juce::uint32 severityWarning    = 0xffd9a53c;
-    static constexpr juce::uint32 severityCritical   = 0xffd14b4b;
-    static constexpr juce::uint32 statusRunning      = 0xff3fae6a; // lamp: running / logging
-    static constexpr juce::uint32 statusIdle         = 0xff525a62; // lamp: stopped
-    static constexpr juce::uint32 statusPaused       = 0xffd9a53c; // lamp: paused / settling
+    static constexpr juce::uint32 severityInfo       = 0xffbcc2cd;
+    static constexpr juce::uint32 severityWarning    = 0xffffd452;
+    static constexpr juce::uint32 severityCritical   = 0xffff6450;
+    static constexpr juce::uint32 statusRunning      = 0xff3bd1a9; // lamp: running / logging
+    static constexpr juce::uint32 statusIdle         = 0xff555a65; // lamp: stopped
+    static constexpr juce::uint32 statusPaused       = 0xffffd452; // lamp: paused / settling
 
     // -- Meter dB colour-zone boundaries (dBFS) -------------------------------
     static constexpr float meterAmberFromDb = -12.0f; // >= this -> amber

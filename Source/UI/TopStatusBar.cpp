@@ -161,7 +161,30 @@ juce::String TopStatusBar::formatDuration (double seconds)
 //==============================================================================
 void TopStatusBar::setAppStatus (const juce::String& text)
 {
-    updateCell (appStatusCell, text, {}, true);
+    appStatusText = text;
+    refreshAppStatusCell();
+}
+
+void TopStatusBar::setAlert (const juce::String& text)
+{
+    if (alertText == text)
+        return;
+
+    alertText = text;
+    refreshAppStatusCell();
+}
+
+void TopStatusBar::refreshAppStatusCell()
+{
+    const bool showAlert = alertText.isNotEmpty();
+
+    if (appStatusCell.alert != showAlert)
+    {
+        appStatusCell.alert = showAlert;
+        repaint (appStatusCell.bounds);
+    }
+
+    updateCell (appStatusCell, showAlert ? alertText : appStatusText, {}, true);
 }
 
 void TopStatusBar::setAudioEngineState (EngineState state)
@@ -180,9 +203,13 @@ void TopStatusBar::setAudioEngineState (EngineState state)
         case EngineState::starting:    text = ("Starting" + kEllipsis);   lamp = Palette::get (Palette::statusPaused);     break;
         case EngineState::running:     text = "Running";     lamp = Palette::get (Palette::statusRunning);    break;
         case EngineState::deviceError: text = "Device error"; lamp = Palette::get (Palette::severityCritical); break;
+        case EngineState::deviceLost:  text = "NO DEVICE";    lamp = Palette::get (Palette::severityCritical); break;
+        case EngineState::outputHeld:  text = "Output held";  lamp = Palette::get (Palette::severityCritical); break;
     }
 
     audioCell.hasLamp = true;
+    audioCell.alert   = (state == EngineState::deviceError || state == EngineState::deviceLost
+                           || state == EngineState::outputHeld);
     updateCell (audioCell, text, lamp, true);
 }
 
@@ -205,7 +232,23 @@ void TopStatusBar::setLoggingState (LoggingState state)
     }
 
     loggingCell.hasLamp = true;
+    loggingCell.alert   = (state == LoggingState::writeError);
     updateCell (loggingCell, text, lamp, true);
+}
+
+void TopStatusBar::setLoggingPausedSeconds (double seconds)
+{
+    if (loggingState != LoggingState::paused)
+        return;
+
+    const int total = juce::jmax (0, (int) seconds);
+
+    // Compact on purpose: the cell is narrow, and h:mm:ss only once it matters.
+    const auto text = total >= 3600
+                        ? juce::String::formatted ("Paused %d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+                        : juce::String::formatted ("Paused %d:%02d", total / 60, total % 60);
+
+    updateCell (loggingCell, text, loggingCell.lamp, true);
 }
 
 void TopStatusBar::setOutputDeviceName (const juce::String& name)
@@ -336,9 +379,17 @@ void TopStatusBar::paint (juce::Graphics& g)
             g.drawFittedText (cell.caption, captionArea, juce::Justification::centredLeft, 1);
         }
 
-        g.setColour (Palette::get (Palette::textPrimary));
-        g.setFont (juce::Font (juce::FontOptions (13.0f)));
-        g.drawFittedText (cell.value, area, juce::Justification::centredLeft, 1);
+        // A fault is red text, not just a red lamp: it has to be readable as
+        // "something is wrong" from across the room.
+        g.setColour (Palette::get (cell.alert ? Palette::severityCritical : Palette::textPrimary));
+        g.setFont (juce::Font (juce::FontOptions (13.0f, cell.alert ? juce::Font::bold : juce::Font::plain)));
+
+        // The app-status alert has no caption above it, so it takes the whole
+        // cell height and may wrap onto a second line.
+        const bool tallAlert = cell.alert && cell.caption.isEmpty();
+
+        g.drawFittedText (cell.value, tallAlert ? cell.bounds.reduced (6, 4) : area,
+                          juce::Justification::centredLeft, tallAlert ? 2 : 1);
     }
 
     // Divider hairlines between cells (skip before the first and the trailing spacer)
@@ -361,12 +412,15 @@ void TopStatusBar::resized()
     // interactive cells now also need room for their chevron.
     struct Spec { Cell* cell; int preferred; int minimum; };
 
+    // The MODE cell is deliberately absent (and so keeps empty bounds, which
+    // paint() and cellAt() skip): its text never changes in V1, and its 160 px
+    // are what the app-status text needs to be readable. LOG is wider than it
+    // was so "Paused 12:34" fits.
     const Spec specs[] =
     {
         { &audioCell,     105,  72 },
-        { &loggingCell,    95,  62 },
+        { &loggingCell,   130,  96 },
         { &durationCell,   95,  62 },
-        { &modeCell,      160,  78 },
         { &outDeviceCell, 165,  88 },
         { &inDeviceCell,  175,  88 },
         { &outChannelsCell, 120,  72 },
@@ -375,7 +429,9 @@ void TopStatusBar::resized()
         { &bufferCell,    155,  92 },
     };
 
-    constexpr int appStatusReserve = 90;   // keep the right-hand status readable
+    // Every failure message ends up in the app-status text. At 90 px it showed
+    // about a dozen characters of "Could not start logging session".
+    constexpr int appStatusReserve = 230;
 
     int preferredTotal = 0;
     for (const auto& spec : specs)
@@ -422,6 +478,7 @@ void TopStatusBar::resized()
     for (size_t i = 0; i < std::size (specs); ++i)
         specs[i].cell->bounds = bounds.removeFromLeft (juce::jmin (bounds.getWidth(), widths[i]));
 
+    modeCell.bounds      = {};       // not laid out (see above)
     appStatusCell.bounds = bounds;   // whatever remains
 }
 

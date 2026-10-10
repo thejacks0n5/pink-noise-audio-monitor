@@ -21,6 +21,7 @@
   ==============================================================================
 */
 
+#include <algorithm>
 #include <functional>
 #include <vector>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -74,12 +75,26 @@ public:
 
     /** Fired when the user renames a manual marker (double-click its row). The
         Event identifies the marker (elapsedSeconds + type); MainComponent
-        forwards the new name into the session CSV. MESSAGE THREAD. */
-    std::function<void (const Event&, const juce::String& newName)> onMarkerRenamed;
+        forwards the new name into the session CSV. MESSAGE THREAD.
+        @returns true if the name reached events.csv. When it did not (no
+        session, or the row was never written) the row says so, rather than
+        looking saved while existing only in this window. */
+    std::function<bool (const Event&, const juce::String& newName)> onMarkerRenamed;
 
     /** Fired when the user edits any event's note (double-click the row).
-        MainComponent forwards the note into the session CSV. MESSAGE THREAD. */
-    std::function<void (const Event&, const juce::String& note)> onNoteEdited;
+        MainComponent forwards the note into the session CSV. MESSAGE THREAD.
+        @returns true if the note reached events.csv (see onMarkerRenamed). */
+    std::function<bool (const Event&, const juce::String& note)> onNoteEdited;
+
+    /** Calls visitor for every stored row from the firstSequence-th event ever
+        added onwards (compare getTotalEventsReceived()), oldest first. Rows
+        already dropped from the display ring are not visited. A visitor that
+        returns true is reporting that the row, with its current name and note,
+        is now in events.csv, which clears the row's "not in CSV" marking. */
+    void visitEventsSince (juce::int64 firstSequence,
+                           const std::function<bool (const Event&,
+                                                     const juce::String& description,
+                                                     const juce::String& note)>& visitor);
 
     /** User channel names, used to render the Ch column so it matches the CSV.
         Index = channel index; missing entries fall back to "In n"/"Out n". */
@@ -142,6 +157,8 @@ private:
         juce::String description;
         juce::String timestampText;   // pre-formatted HH:MM:SS.mmm ("" if none)
         juce::String note;            // user annotation, editable after the fact
+        bool noteNotInCsv = false;    // the last note edit could not be written to events.csv
+        bool nameNotInCsv = false;    // likewise for a marker rename
     };
 
     void rebuildFilteredIndex();      // recompute visibleRows after filter edits
@@ -155,7 +172,7 @@ private:
     int maxStoredEvents = defaultMaxStoredEvents;
 
     Severity minimumSeverity = Severity::Info;
-    bool typeVisible[numEventTypes] { true, true, true, true, true, true, true }; // per EventType
+    bool typeVisible[numEventTypes];  // per EventType; all set true in the ctor
     bool autoScroll = true;
 
     // Toolbar widgets (built in the ctor, laid out in resized()):

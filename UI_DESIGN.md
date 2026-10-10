@@ -1,5 +1,11 @@
 # Pink Noise Audio Monitor — V1 UI Design
 
+> **Superseded in places (October 2026).** The palette in §2 is now the one in
+> `Source/UI/DarkLookAndFeel.h` (blue accent matched to the app icon; the hex
+> table below is the original and no longer what ships). The status bar no
+> longer has a MODE cell. Pause now gates measurements only; events and markers
+> are still written. `BUILD_NOTES.md` §7 lists the behaviour changes.
+
 Namespace `pnam`. Headers under `Source/UI/`. Declarations only; bodies go in
 matching `.cpp` files. Modules: `juce_gui_basics`, `juce_gui_extra`,
 `juce_audio_utils`.

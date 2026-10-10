@@ -87,6 +87,12 @@ void WaveformDisplay::setNumLanes (int newNumLanes)
         return;
 
     numLanes = newNumLanes;
+
+    // Keep the selector in step when the count comes from saved settings rather
+    // than from the selector itself: it used to keep reading "2 lanes" over a
+    // restored four-lane layout, and then picking "2 lanes" did nothing.
+    laneCountSelector.setSelectedId (numLanes, juce::dontSendNotification);
+
     rebuildLaneSelectors();
     rebuildRings();
     resized();

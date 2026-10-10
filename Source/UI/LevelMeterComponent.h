@@ -83,6 +83,13 @@ public:
     void setChannelNames (const juce::StringArray& names);
     int  getNumChannels() const noexcept                     { return numChannels; }
 
+    /** Per-bar Monitor state (index = channel; missing entries count as
+        monitored). An unmonitored input still meters but takes no part in fault
+        detection and is left out of measurements.csv, so its bar is drawn
+        dimmed with an "OFF" caption: on the main window it used to look exactly
+        like a monitored one. */
+    void setChannelMonitored (const juce::Array<bool>& monitored);
+
     //==========================================================================
     // Per-tick update (called from MainComponent::timerCallback)
     /** Polls the source's atomic getters, applies release ballistics, and
@@ -157,6 +164,7 @@ private:
     float shownRmsDb[maxChannels];
     float shownHoldDb[maxChannels];
     bool  clipLit[maxChannels] {};
+    bool  channelOff[maxChannels] {};        // Monitor unticked (see setChannelMonitored)
     juce::StringArray channelNames;
     juce::Rectangle<int> nameArea;   // strip under the bars for channel names
     juce::int64 lastRefreshMs = 0;           // for release ballistics

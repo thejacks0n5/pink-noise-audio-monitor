@@ -121,6 +121,11 @@ public:
     /** Total capacity in records. */
     int getCapacity() const noexcept        { return fifo.getTotalSize(); }
 
+    /** PRODUCER THREAD. Records that can be pushed right now. Lets a producer
+        that is able to retry later hold a record back instead of calling push()
+        and having it counted as dropped. */
+    int getFreeSpace() const noexcept       { return fifo.getFreeSpace(); }
+
     /** Running count of push() calls dropped because the queue was full.
         Read on the message thread to detect overload/stalls. */
     uint64_t getTotalPushFailures() const noexcept

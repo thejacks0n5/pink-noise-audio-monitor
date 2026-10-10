@@ -25,6 +25,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 #include <juce_core/juce_core.h>
 #include <juce_audio_basics/juce_audio_basics.h>
 
@@ -34,6 +35,8 @@
 
 namespace pnam
 {
+
+class ArtifactDetector;
 
 //==============================================================================
 /** Cheap per-block summary handed from AnalysisProcessor to EventDetector
@@ -54,6 +57,13 @@ struct BlockStats
 
     /** Per-input: inRmsDb[i] - refRmsDb[reference output for input i]. */
     float   gainDiffDb[maxChannels] {};
+
+    /** Linear mean-square of the same blocks (unclamped). The EventDetector
+        smooths these rather than the dB values: averaging energies is what makes
+        a level comparison stable when the returned block lags the reference
+        block by the round-trip latency. */
+    double  refMeanSquare[maxChannels] {};
+    double  inMeanSquare[maxChannels]  {};
 
     /** Which output each input was compared against, so the EventDetector can
         quote the right reference level without needing the mapping itself. */
@@ -189,6 +199,10 @@ public:
     /** MESSAGE THREAD. Excludes an input from fault detection without hiding its
         levels — for inputs with nothing patched into them, which would otherwise
         sit below the dropout threshold and report a permanent critical fault. */
+    /** NON-REAL-TIME, before audio starts. Where the per-input artifact
+        figures for each measurement row come from (may be null). */
+    void setArtifactDetector (ArtifactDetector* detectorOrNull) noexcept   { artifactDetector = detectorOrNull; }
+
     void setInputMonitored (int inputChannel, bool shouldMonitor) noexcept
     {
         inputMonitoredFlags[clampChannel (inputChannel)].store (shouldMonitor, std::memory_order_relaxed);
@@ -212,6 +226,7 @@ private:
     static int clampChannel (int ch) noexcept { return juce::jlimit (0, maxChannels - 1, ch); }
 
     MeasurementQueue& measurementQueue;
+    ArtifactDetector* artifactDetector { nullptr };
 
     // Config (atomic targets)
     std::atomic<float>  measurementIntervalSeconds { 1.0f };
@@ -238,6 +253,11 @@ private:
     int32_t intervalClipCountPerChannel[maxChannels] {};
     int32_t intervalStatusBits { StatusBits::ok };
     bool    intervalDropoutSeen { false };
+
+    // Reference-block scratch, reused per channel. Sized once in prepare(): a
+    // function-local thread_local is allocated lazily on first touch, which on
+    // macOS means a malloc on every new audio IO thread's first callback.
+    std::vector<float> refScratch;
 
     // Published live values
     std::atomic<float>  atomicRefPeakDb[maxChannels];

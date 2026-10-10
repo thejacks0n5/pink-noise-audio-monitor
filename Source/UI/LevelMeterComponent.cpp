@@ -44,6 +44,22 @@ void LevelMeterComponent::setChannelNames (const juce::StringArray& names)
     }
 }
 
+void LevelMeterComponent::setChannelMonitored (const juce::Array<bool>& monitored)
+{
+    bool changed = false;
+
+    for (int ch = 0; ch < maxChannels; ++ch)
+    {
+        const bool off = ch < monitored.size() && ! monitored[ch];
+
+        changed = changed || (channelOff[ch] != off);
+        channelOff[ch] = off;
+    }
+
+    if (changed)
+        repaint();
+}
+
 void LevelMeterComponent::setNumChannels (int newNumChannels)
 {
     // Both roles are now per-channel: the reference side draws one bar per
@@ -244,13 +260,19 @@ void LevelMeterComponent::paint (juce::Graphics& g)
             g.setColour (Palette::get (Palette::meterTrough));
             g.fillRect (bar);
 
+            // An unmonitored input keeps metering (that is how a patch point is
+            // found) but everything it shows is dimmed, so it cannot be mistaken
+            // for a channel that is being watched and logged.
+            const bool  off      = channelOff[ch];
+            const float litAlpha = off ? 0.25f : 1.0f;
+
             const float peakProp = proportionForDb (shownPeakDb[ch]);
             const int litHeight = juce::roundToInt (peakProp * (float) bar.getHeight());
 
             if (litHeight > 0)
             {
                 juce::Rectangle<int> litRect (bar.getX(), bar.getBottom() - litHeight, bar.getWidth(), litHeight);
-                g.setColour (Palette::meterColourForDb (shownPeakDb[ch]));
+                g.setColour (Palette::meterColourForDb (shownPeakDb[ch]).withMultipliedAlpha (litAlpha));
                 g.fillRect (litRect);
             }
 
@@ -292,7 +314,7 @@ void LevelMeterComponent::paint (juce::Graphics& g)
             if (rmsHeight > 0)
             {
                 juce::Rectangle<int> rmsRect (bar.getX(), bar.getBottom() - rmsHeight, bar.getWidth(), rmsHeight);
-                g.setColour (Palette::get (Palette::meterRmsOverlay));
+                g.setColour (Palette::get (Palette::meterRmsOverlay).withMultipliedAlpha (litAlpha));
                 g.fillRect (rmsRect);
             }
 
@@ -301,12 +323,41 @@ void LevelMeterComponent::paint (juce::Graphics& g)
             {
                 const float holdProp = proportionForDb (shownHoldDb[ch]);
                 const int holdY = bar.getBottom() - juce::roundToInt (holdProp * (float) bar.getHeight());
-                g.setColour (Palette::get (Palette::meterPeakTick));
+                g.setColour (Palette::get (Palette::meterPeakTick).withMultipliedAlpha (litAlpha));
                 g.fillRect (bar.getX(), juce::jlimit (bar.getY(), bar.getBottom() - 2, holdY - 1), bar.getWidth(), 2);
             }
 
             g.setColour (Palette::get (Palette::outline));
             g.drawRect (bar, 1);
+
+            // "OFF" at the top of the bar: across it when the bar is wide enough,
+            // otherwise turned on its side like the channel names.
+            if (off && bar.getWidth() + gap >= 9)
+            {
+                g.setColour (Palette::get (Palette::textPrimary));
+                g.setFont (juce::Font (juce::FontOptions (9.5f, juce::Font::bold)));
+
+                if (bar.getWidth() >= 20)
+                {
+                    g.drawText ("OFF", bar.withHeight (juce::jmin (16, bar.getHeight())),
+                                juce::Justification::centred, false);
+                }
+                else
+                {
+                    const juce::Rectangle<int> strip (bar.getX(), bar.getY(),
+                                                      bar.getWidth(), juce::jmin (30, bar.getHeight()));
+
+                    juce::Graphics::ScopedSaveState rotated (g);
+                    g.addTransform (juce::AffineTransform::rotation (
+                        -juce::MathConstants<float>::halfPi,
+                        (float) strip.getCentreX(), (float) strip.getCentreY()));
+
+                    juce::Rectangle<int> textRect (0, 0, strip.getHeight(), juce::jmax (11, strip.getWidth()));
+                    textRect.setCentre (strip.getCentre());
+
+                    g.drawText ("OFF", textRect, juce::Justification::centred, false);
+                }
+            }
         }
 
         // dB ruler

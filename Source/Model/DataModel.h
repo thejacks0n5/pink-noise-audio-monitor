@@ -41,11 +41,19 @@ enum class EventType : int32_t
     /** User changed the audio device/rate/buffer/channels (message thread origin).
         Informational, not a fault: detection is suppressed across the
         reconfiguration so the resulting glitch is not logged as a dropout. */
-    AudioSettingsChanged = 7
+    AudioSettingsChanged = 7,
+
+    // --- Artifact detection (ArtifactDetector): the return compared sample by
+    //     sample against the reference it should be a delayed copy of. --------
+    Click           = 8,   ///< Isolated impulsive artifact in the return (click, pop, tick, short burst).
+    Noise           = 9,   ///< Non-reference energy spread evenly in time (static, hiss, crackle, buzz).
+    Distortion      = 10,  ///< Non-reference energy riding the signal's peaks (clipping / saturation in the path).
+    TimingSlip      = 11,  ///< The path's delay stepped: samples were dropped or repeated.
+    SignalMismatch  = 12   ///< The return is present but is not the reference signal.
 };
 
 /** Number of EventType values — keep in step when appending. */
-constexpr int numEventTypes = 8;
+constexpr int numEventTypes = 13;
 
 /** Severity used for UI colouring, CSV, and notification gating.
     Only Severity::Critical events may trigger desktop notifications. */
@@ -127,6 +135,17 @@ struct Measurement
 
     /** Clipped input samples during the interval, split per input channel. */
     int32_t clipCountPerChannel[maxChannels] {};
+
+    /** Artifact detection, per input (see ArtifactDetector). residualDb and
+        latencyMs mean something only where artifactAligned[i] is true: the
+        return has been matched to its reference. residualDb is how much of the
+        return is NOT the reference, relative to the part that is (a THD+N-like
+        figure, measured between ~200 Hz and ~16 kHz). clickCount is every
+        click in the interval, including those not given their own event. */
+    float   residualDb[maxChannels] {};
+    float   latencyMs[maxChannels] {};
+    int32_t clickCount[maxChannels] {};
+    bool    artifactAligned[maxChannels] {};
 
     float   correlation    { 0.0f };  ///< Ref/input correlation coefficient [-1..1]. May be 0.0 in V1 (unimplemented).
 

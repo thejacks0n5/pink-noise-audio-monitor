@@ -18,8 +18,10 @@
         stream to disk; SessionLogger calls it periodically (every few
         seconds) and on every event row, so a crash/power-cut loses at most a
         few measurement rows.
-      - All I/O failures set a sticky error flag (hadWriteError()) instead of
-        throwing; SessionLogger checks it and raises a LoggingError event.
+      - All I/O failures set an error flag (hadWriteError()) instead of
+        throwing; SessionLogger checks it and raises a LoggingError event. The
+        flag stays set (and writeRow() refuses rows) until reopenForAppend()
+        succeeds — a failure is not allowed to end logging for the session.
       - Destructor flushes and closes (RAII).
   ==============================================================================
 */
@@ -52,8 +54,23 @@ public:
         error occurred (error flag becomes sticky). */
     bool writeRow (const juce::StringArray& cells);
 
-    /** Forces buffered data to disk. Safe to call when closed (no-op). */
+    /** Forces buffered data to disk. Safe to call when closed (no-op). Sets the
+        error flag if the stream reports a failure OR the file is shorter
+        afterwards than everything written to it should have made it. */
     void flush();
+
+    /** Recovery after a write/flush error: drops the failed stream and reopens
+        the file given to open() for APPEND, keeping everything already in it.
+        Writes the header only if the file is missing or empty, and first
+        removes a half-written last line (the failed write's fragment) so the
+        file holds complete rows only. Clears the error flag on success; getRowsWritten() carries on.
+        @returns false (flag still set) if the file cannot even be reopened.
+
+        A true result is PROVISIONAL: when the file needed neither header nor
+        newline nothing was written, and reopening succeeds on a full disk. The
+        caller has to write and flush a real row before treating the file as
+        recovered. */
+    bool reopenForAppend (const juce::StringArray& headerColumns);
 
     /** Flushes and closes the stream. Safe to call repeatedly. */
     void close();
@@ -61,7 +78,8 @@ public:
     //==========================================================================
     bool isOpen() const noexcept;
 
-    /** Sticky flag: true if any write/flush has failed since open(). */
+    /** True if a write/flush has failed since open() or the last successful
+        reopenForAppend(). */
     bool hadWriteError() const noexcept;
 
     /** The file passed to open() (invalid File if never opened). */
@@ -81,6 +99,12 @@ private:
     int        numColumns   { 0 };
     int64_t    rowsWritten  { 0 };
     bool       writeErrorFlag { false };
+
+    // Bytes the file must hold once everything handed to the stream has been
+    // flushed. flush() checks the real size against it: a SHORT write (a full
+    // disk taking part of the buffer) is not an error as far as the stream's
+    // status is concerned, and would otherwise pass for a successful flush.
+    juce::int64 expectedSize { 0 };
 };
 
 } // namespace pnam

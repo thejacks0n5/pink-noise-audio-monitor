@@ -566,8 +566,10 @@ void UpdateChecker::installAndRelaunch (const juce::File& newApp, const juce::St
 
     launcher.waitForProcessToFinish (5000);
 
-    if (auto* app = juce::JUCEApplicationBase::getInstance())
-        app->systemRequestedQuit();
+    // quit(), not systemRequestedQuit(): the prompt the user just answered
+    // already said this ends the session, and the install script only waits so
+    // long for this process to go. A second "are you sure?" could outlast it.
+    juce::JUCEApplicationBase::quit();
 }
 
 void UpdateChecker::showMessage (juce::MessageBoxIconType icon, const juce::String& title, const juce::String& message)

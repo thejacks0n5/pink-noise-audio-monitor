@@ -77,6 +77,14 @@ public:
     /** Seed currently in use (post zero-remap). */
     uint64_t getSeed() const noexcept;
 
+    /** Parses a seed as typed by the user or copied from session_info.txt.
+        Seeds are UNSIGNED 64-bit: values of 2^63 and above (the default seed is
+        one) do not survive a signed parse. Accepts plain decimal digits; a
+        leading '-' is read as the signed form older logs wrote for the same
+        bits. Out-of-range input saturates at UINT64_MAX; anything else is 0
+        ("auto"). */
+    static uint64_t parseSeed (const juce::String& text) noexcept;
+
     /** NON-REAL-TIME. Must be called before processBlock, and again whenever
         the device sample rate or maximum block size changes. Resets fade and
         gain smoothers; does NOT reset the seed/stream (call setSeed for that). */
@@ -107,6 +115,12 @@ public:
         start), startFade(false) fades out (used before stopping the device so
         stopping never clicks). */
     void startFade (bool fadeIn) noexcept;
+
+    /** Fades in FROM SILENCE whatever the fade level was — for resuming an
+        output that was cut rather than faded (the engine's device-loss hold),
+        where a plain startFade(true) would find the fade already at full and
+        resume with a click. Any thread; applied at the next block. */
+    void startFadeInFromSilence() noexcept;
 
     /** Fade in/out duration in milliseconds (default 500). Any thread. */
     void setFadeTimeMs (double ms) noexcept;
@@ -167,7 +181,7 @@ private:
     std::atomic<bool>  muted             { false };
     std::atomic<int>   stereoMode        { (int) StereoMode::LinkedMono };
     std::atomic<float> fadeTimeMsAtomic  { (float) defaultFadeTimeMs };
-    std::atomic<int>   pendingFade       { 0 };      // 0 none, +1 in, -1 out
+    std::atomic<int>   pendingFade       { 0 };      // 0 none, +1 in, -1 out, +2 in from silence
     std::atomic<float> currentGainLinear { 0.0f };
     std::atomic<bool>  fadeActive        { false };
 

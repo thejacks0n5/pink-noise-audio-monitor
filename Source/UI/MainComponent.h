@@ -35,8 +35,11 @@
         int readInputWaveform (int channel, float* dest, int maxSamples);
 
     TIMER (single juce::Timer, ~30 Hz — startTimerHz (30) in the ctor):
-      timerCallback() is the ONLY place FIFOs are drained and the only writer
-      of SessionLogger / NotificationEngine / UI state. Per tick:
+      timerCallback() is where the FIFOs are drained, every tick. The event
+      FIFO is additionally drained by startAudio() and beginLoggingSession(),
+      which need the live log up to date at that instant. All of it is on the
+      message thread, which is also the only writer of SessionLogger /
+      NotificationEngine / UI state. Per tick:
         1. measurementQueue.popAll:
              - latest values → meters handled separately via atomics (below)
              - clipCountBlock > 0            → inputMeter.notifyClipped(...)
@@ -44,7 +47,8 @@
         2. eventQueue.popAll:
              - desc = SessionLogger::composeDescription (e)
              - eventLog.addEvent (e, desc, startUtc + e.elapsedSeconds)
-             - if logging active && !paused  → sessionLogger.logEvent (e, desc)
+             - if logging active             → sessionLogger.logEvent (e, desc)
+               (pause holds back measurement rows only, never events)
              - if e.severity == Critical     → notificationEngine.postCritical
         3. refMeter.refresh(); inputMeter.refresh();      // poll atomics
         4. engine.readReferenceWaveform / readInputWaveform →
@@ -82,6 +86,7 @@
   ==============================================================================
 */
 
+#include <functional>
 #include <memory>
 #include <vector>
 #include <juce_data_structures/juce_data_structures.h>  // juce::ApplicationProperties
@@ -147,10 +152,30 @@ public:
         columns and the events file. */
     void openChannelSetup();
 
-    /** Menu-driven transport (Main.cpp binds these to keyboard shortcuts). */
+    /** Menu-driven transport (Main.cpp binds these to keyboard shortcuts).
+        Stopping asks first while a logging session is active. */
     void toggleAudio();
     void toggleLogging();
     void addMarkerNow();
+
+    /** Real engine / logger state, for the menu's item names and enablement. */
+    bool isAudioRunning() const;
+    bool isLoggingActive() const;
+
+    /** Fired (message thread) whenever either of the two states above changes,
+        whatever caused it. Main.cpp uses it to refresh the menu bar. */
+    std::function<void()> onTransportStateChanged;
+
+    /** Runs `proceed` straight away when no logging session is active. While
+        one is, asks first (async, "Keep Logging" / "<actionName>") and runs it
+        only if the user clicks the action: Stop Logging, Stop Audio and Quit
+        each end an unattended run, and were one stray click or keypress away.
+        Return and Escape both keep logging.
+        @param actionName   button text and title, e.g. "Stop Logging".
+        @param consequence  one sentence saying what the action does to the log. */
+    void confirmIfLogging (const juce::String& actionName,
+                           const juce::String& consequence,
+                           std::function<void()> proceed);
 
     /** Exposed so the window can persist its bounds alongside the app state. */
     juce::PropertiesFile* getUserSettings() { return appProperties.getUserSettings(); }
@@ -176,10 +201,47 @@ private:
 
     void startAudio();                       // engine.start(); statusBar/buttons
     void stopAudio();                        // stops logging first if active
-    void startLogging();                     // prompt-if-needed, then beginLoggingSession
+    void startLogging();                     // prompt-if-needed, pre-flight, then beginLoggingSession
     void beginLoggingSession();              // buildSessionInfo() → sessionLogger.startSession
     void stopLogging();
-    void setLoggingPaused (bool shouldPause);// gates CSV writes; queues still drain
+    void setLoggingPaused (bool shouldPause);// gates measurement rows only; events are
+                                             // still written, and the pause itself is logged
+
+    // What the buttons and menu call: the two above, behind confirmIfLogging().
+    // stopAudio()/stopLogging() themselves never ask (shutdown, device loss).
+    void requestStopAudio();
+    void requestStopLogging();
+
+    /** Checks, at Start Logging, the things that waste an unattended run: output
+        muted, a monitored input at digital silence, a fault already active, a
+        log folder that is unwritable or nearly full. Starts the session at once
+        when none apply; otherwise lists the ones that do and asks. */
+    void runLoggingPreflight();
+    juce::StringArray collectPreflightProblems();
+
+    /** One live-log row, as needed to write it into events.csv after the fact. */
+    struct LiveLogRow
+    {
+        Event event;
+        juce::String description, note;
+    };
+
+    /** Conditions that started during the current audio session and have not
+        ended: every start row in the live log with no matching end row. */
+    std::vector<LiveLogRow> findActiveFaultRows();
+
+    /** Injects an EventType::Other row (message thread, same path as a manual
+        marker): live log always, events.csv while a session is active. */
+    void logSessionNote (const juce::String& description, Severity severity);
+
+    /** One async alert for a failure the user must not miss. The status bar
+        still gets its text; this is for when nobody is reading the status bar. */
+    void showErrorAlert (const juce::String& title, const juce::String& message);
+
+    /** Keeps the Mac from idle-sleeping for as long as a logging session is
+        active (system sleep stops the audio device and with it the run). */
+    void holdSleepAssertion();
+    void releaseSleepAssertion();
     void setOutputLevelDb (double newLevelDb);   // generator.setLevelDb + SessionInfo
     void setOutputMuted (bool shouldMute);       // generator.setMuted + status bits
     void addManualMarker();                  // pushes an EventType::ManualMarker
@@ -198,12 +260,14 @@ private:
         app restarts. */
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
-    /** Writes the manager's state to appProperties under "audioDeviceState". */
+    /** Writes the device the user CHOSE (chosenDeviceState) to appProperties
+        under "audioDeviceState" — not whatever the manager is running on now,
+        which after a device loss is a fallback nobody asked for. */
     void saveDeviceState();
 
     /** Compares the live device setup against lastKnownSetup and, if anything
         differs, logs one AudioSettingsChanged event naming the change (event log
-        always; CSV when logging is active and not paused). */
+        always; CSV whenever a session is active). */
     void logAudioSettingsChange();
 
     /** Applies a device setup with the engine bracketed by
@@ -212,13 +276,115 @@ private:
     juce::String applyDeviceSetup (const juce::AudioDeviceManager::AudioDeviceSetup&);
 
     /** The expected-change window suppresses audioDeviceStopped, so a device
-        that genuinely died during it (unplugged mid-dialog, or a setup the
-        hardware refused) would leave the app claiming to run forever. Called
-        whenever the window closes and after every apply: if no device is open,
-        reports the loss and reflects the stopped state everywhere. */
-    void checkDeviceStillPresent();
+        that genuinely died during it would go unreported. Called after every
+        applyDeviceSetup and whenever a window closes: if no device is open,
+        writes one AudioDeviceLost row.
+        @param mayStopSession  true only on the user's own applyDeviceSetup
+               path, where a refused setting also stops audio and logging (the
+               user is at the controls). Everywhere else — a window lapsing, the
+               automatic recovery — the session is left running: one failed
+               re-open must not end an unattended run. */
+    void checkDeviceStillPresent (bool mayStopSession);
 
-    bool wasExpectingDeviceChange = false;
+    /** Injects one Critical AudioDeviceLost row (live log, events.csv while a
+        session is active, notification). */
+    void logDeviceLostRow (const juce::String& description);
+
+    //==========================================================================
+    // Which device the user chose, and what to do when we are not on it.
+
+    /** Tells the engine that device stops are expected from now until holdMs
+        from now. Used around a change this component makes itself, and for the
+        second after any user-made change: CoreAudio follows a reconfiguration
+        with a restart of its own ~100 ms later. Lapses by itself in
+        timerCallback — it is no longer held for as long as the Audio Device
+        Setup dialog is open, which hid real device losses all night. */
+    void expectDeviceChangeFor (double holdMs);
+
+    /** Closes the window now. */
+    void endExpectedDeviceChange();
+
+    /** Per tick, before the event queue is drained: notices that the manager's
+        explicit (user-made) device state has changed, which is the one exact
+        sign that a device stop was the user's doing — the selector component
+        applies its changes itself, so they cannot be bracketed in advance. */
+    void trackDeviceSelection();
+
+    /** The live device is not the one the user chose (and they did choose one). */
+    bool isOnUnchosenFallback() const;
+    bool isChosenDeviceAvailable() const;
+
+    /** The user agreed to play through the live device: by answering the
+        Start Audio prompt, or by starting on it when no interface was saved.
+        Held as device NAMES, so agreeing to one fallback never covers the next. */
+    bool isLiveDeviceAccepted() const;
+    void acceptLiveDevice();
+
+    /** The live device is the chosen one or an accepted one. */
+    bool isLiveDeviceWanted() const;
+
+    /** The invariant, enforced every tick: a running session never plays
+        through a device that is neither chosen nor accepted. The engine holds
+        its output silent by itself after a stop it did not expect, but a device
+        that drops inside an expected-change window is not reported to it — so
+        if we find ourselves on such a device with the output not held, hold it
+        here and write the row the engine did not. */
+    void holdIfOnUnwantedDevice();
+
+    /** "UMC404HD", or "UMC404HD / Built-in Mic" when output and input differ. */
+    static juce::String describeDevices (const juce::String& outputName, const juce::String& inputName);
+
+    /** Adopts a device state as the user's choice and persists it. */
+    void setChosenDeviceState (std::unique_ptr<juce::XmlElement> state);
+
+    /** While something is wrong (no device, a device that has stopped running,
+        or a fallback nobody chose): reopens the last device, or re-applies the
+        chosen setup once that device is listed again, and releases the engine's
+        device-loss silence when we are back on a wanted device. Attempts that
+        fail back off (2, 5, 15, 60 s) until one succeeds or the device list
+        changes; each re-open gaps the measurements, so it must not be hammered. */
+    void recoverChosenDevice (double nowMs);
+
+    /** Per tick: transport buttons, AUDIO and LOG cells and the red alert text
+        follow what the engine and logger are actually doing. */
+    void reconcileStatus (double nowMs);
+
+    /** Per tick: reports queue overflows (data lost before it reached the log)
+        and a session that has stopped producing measurements. */
+    void checkDataFlow (double nowMs);
+
+    // The user's own selection, as persisted. May be null (never chose).
+    std::unique_ptr<juce::XmlElement> chosenDeviceState;
+    juce::String chosenOutputName, chosenInputName;
+
+    // The manager's explicit state and live setup as last seen by
+    // trackDeviceSelection(), to notice changes to either.
+    std::unique_ptr<juce::XmlElement> observedManagerState;
+    juce::AudioDeviceManager::AudioDeviceSetup observedSetup;
+
+    // The device the user agreed to play through (see isLiveDeviceAccepted).
+    bool acceptedDeviceSet = false;
+    juce::String acceptedOutputName, acceptedInputName;
+
+    // All getMillisecondCounterHiRes() values; 0 = not set.
+    double expectedChangeUntilMs      = 0.0;   // engine's expected-change flag lapses then
+    double swallowDeviceEventsUntilMs = 0.0;   // device-lost rows from a user's own change
+    double nextRecoveryAttemptMs      = 0.0;   // recoverChosenDevice does nothing before this
+    double deviceInactiveSinceMs      = 0.0;   // session running, device open but not running
+    double deviceTroubleSinceMs       = 0.0;   // running session, device not doing its job
+    int    recoveryFailures           = 0;     // consecutive failed re-opens (the backoff step)
+    bool   deviceLossAlertShown       = false;
+    bool   deviceGoneReported         = false; // "no device is open" row written for this outage
+
+    // Output + input device names as last listed, to tell a real device-list
+    // change from the manager's many other change broadcasts.
+    juce::String deviceListSignature;
+
+    // Data-flow watchdog.
+    juce::int64 reportedDroppedEvents = 0, reportedDroppedMeasurements = 0;
+    double      lastMeasurementMs     = 0.0;   // hi-res counter, for the 3 s test
+    juce::Time  lastMeasurementWall;           // wall clock, for the gap length
+    bool        stallActive           = false;
 
     /** Last setup we reported on, so changes can be described as before → after. */
     juce::AudioDeviceManager::AudioDeviceSetup lastKnownSetup;
@@ -280,6 +446,25 @@ private:
     // Kept alive across the async FileChooser callback.
     std::unique_ptr<juce::FileChooser> logFileChooser;
 
+    // Async alert box. Owned here so it cannot outlive this component:
+    // destroying a ScopedMessageBox closes its box without calling a callback.
+    juce::ScopedMessageBox errorBox;
+
+    /** One async question with a safe answer and an action. The safe button is
+        the default: it is first, takes Return AND Escape, and is what every
+        other way of dismissing the box amounts to. The action runs only when
+        its own button is clicked. Separate from errorBox, so an error never
+        replaces a pending question; a second question replaces the first. */
+    void showConfirm (juce::MessageBoxIconType icon,
+                      const juce::String& title, const juce::String& message,
+                      const juce::String& safeButtonText, const juce::String& actionButtonText,
+                      std::function<void()> onAction);
+
+    // The open question, if any. Self-deleting when answered; deleted in the
+    // dtor otherwise (its callback then sees the safe answer and a dead
+    // SafePointer, and does nothing).
+    juce::Component::SafePointer<juce::AlertWindow> confirmWindow;
+
     //==========================================================================
     // 1. Theme (constructed first, destroyed last)
     DarkLookAndFeel lookAndFeel;
@@ -312,9 +497,29 @@ private:
     // Session / UI state (message thread only)
     SessionInfo currentSessionInfo;          // valid while logging or exportable
     bool  loggingPaused        = false;
+    juce::uint32 pauseStartedMs = 0;         // getMillisecondCounter() at the last pause
     int   markerCounter        = 0;          // "Marker N" labels, reset per session
     bool  sessionAvailable     = false;      // a session folder exists to export
     juce::Time sessionStartUtc;              // for event wall-clock timestamps
+
+    // eventLog.getTotalEventsReceived() at the last Start Audio: live-log rows
+    // from here on share the current session clock, earlier ones do not.
+    juce::int64 audioSessionFirstEvent = 0;
+
+    // Logging failures: startSession reports its reason through onLoggingError
+    // before returning false, so the reason is collected for the one alert the
+    // failed start raises; a failure outside startSession is a mid-run write
+    // error, alerted once per session.
+    bool startingLoggingSession  = false;
+    juce::String loggingStartError;
+    bool writeFailureAlertShown  = false;
+
+    // Last states reported through onTransportStateChanged.
+    bool reportedAudioRunning  = false;
+    bool reportedLoggingActive = false;
+
+    // IOPMAssertionID of the sleep assertion held while logging; 0 = none.
+    juce::uint32 sleepAssertionId = 0;
 
     // Scratch buffer reused by updateMetersAndWaveform() for engine waveform
     // reads (preallocated once; never allocated per tick)

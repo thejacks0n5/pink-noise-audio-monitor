@@ -34,6 +34,7 @@
 #include "ReferenceHistory.h"
 #include "AnalysisProcessor.h"
 #include "EventDetector.h"
+#include "ArtifactDetector.h"
 
 namespace pnam
 {
@@ -90,15 +91,73 @@ public:
 
         Deliberately does NOT re-select default devices: doing so would discard
         whatever the user chose in Audio Device Setup. @returns false if no
-        device could be opened. */
+        device could be opened.
+
+        A no-op returning true while a session is already running: the session
+        clock is only ever zeroed by a start that follows a stop(), never
+        underneath a session (and a log) that is still open. */
     bool start();
 
     /** MESSAGE THREAD. Fades the generator out, waits (bounded) for the fade
-        to complete, then stops/detaches the device. Safe to call when not
-        running. */
+        to complete, then silences the output (the device stays open so the
+        input meters keep working). Always leaves the output silenced, including
+        when the session was not running. */
     void stop();
 
+    /** True from a successful start() until stop(). This is the SESSION state,
+        not the device state: an unexpected device stop or restart does not end
+        the session (the clock, the detector state and any open log carry on),
+        so it does not clear this. See isDeviceActive() and
+        isOutputSilencedForDeviceLoss() for what the hardware is doing. */
     bool isRunning() const noexcept { return running.load (std::memory_order_relaxed); }
+
+    /** True while a device is started and calling the audio callback. False
+        between a device stopping (for any reason) and the next one starting. */
+    bool isDeviceActive() const noexcept { return deviceActive.load (std::memory_order_relaxed); }
+
+    /** True after the device stopped WITHOUT being asked to (unplugged, clock
+        loss, a CoreAudio renegotiation...). From that moment the output is held
+        silent, because whatever device JUCE reopens next may be the system
+        default — and pink noise must never start coming out of the Mac's own
+        speakers. Input metering and the session clock continue.
+
+        The hold is released automatically if the SAME device comes back, and
+        by clearDeviceLossSilence() or a fresh start() otherwise. */
+    bool isOutputSilencedForDeviceLoss() const noexcept
+    {
+        return deviceLossSilenced.load (std::memory_order_relaxed);
+    }
+
+    /** MESSAGE THREAD. Releases the device-loss hold so output resumes (with the
+        usual fade-in and settling window) on whatever device is open now. Call
+        once the device the user actually chose is back. No-op if not held. */
+    void clearDeviceLossSilence() noexcept;
+
+    /** MESSAGE THREAD. Forces the same silent hold an unexpected device stop
+        sets, whatever the expected-change flag says — for when the UI finds the
+        session running on a device the user did not choose (a loss that happened
+        inside an expected-change window is swallowed, and JUCE's fallback device
+        would otherwise play the noise). Released the same ways: by
+        clearDeviceLossSilence(), by a fresh start(), or by the device the user
+        chose (the device manager's explicit selection) starting again. Logs
+        nothing. No-op if the hold is already in force. */
+    void holdOutputForDeviceLoss() noexcept;
+
+    /** Events that could not be queued for the message thread and are gone
+        (queue full). Detector start/end events are held and retried rather than
+        dropped, so in practice this counts lost device-lost/device-error
+        records. Any thread. */
+    int64_t getDroppedEventCount() const noexcept
+    {
+        return (int64_t) eventQueue.getTotalPushFailures();
+    }
+
+    /** Measurement snapshots dropped because their queue was full — i.e. rows
+        that will be missing from measurements.csv. Any thread. */
+    int64_t getDroppedMeasurementCount() const noexcept
+    {
+        return (int64_t) measurementQueue.getTotalPushFailures();
+    }
 
     /** True while the device callback is attached but no noise is being emitted
         — the state the app sits in before Start Audio and after Stop Audio.
@@ -110,6 +169,7 @@ public:
 
     AnalysisProcessor&  getAnalysis()  noexcept { return analysisProcessor; }
     EventDetector&      getDetector()  noexcept { return eventDetector; }
+    ArtifactDetector&   getArtifactDetector() noexcept { return artifactDetector; }
     PinkNoiseGenerator& getGenerator() noexcept { return generator; }
 
     double getSampleRate() const noexcept          { return currentSampleRate.load (std::memory_order_relaxed); }
@@ -153,8 +213,44 @@ private:
     ReferenceHistory   inputHistory;     // input ring, for waveform display only
     AnalysisProcessor  analysisProcessor;
     EventDetector      eventDetector;
+    ArtifactDetector   artifactDetector;
+
+    /** Runs the artifact detector's cross-correlations (finding each return's
+        delay) off the audio thread. It polls: the audio thread hands work over
+        through atomics and must never signal or wake anything. */
+    struct AcquisitionThread : public juce::Thread
+    {
+        explicit AcquisitionThread (ArtifactDetector& d) : juce::Thread ("Artifact alignment"), detector (d) {}
+
+        void run() override
+        {
+            while (! threadShouldExit())
+                if (! detector.serviceAcquisitions())
+                    wait (20);
+        }
+
+        ArtifactDetector& detector;
+    };
+
+    AcquisitionThread acquisitionThread { artifactDetector };
 
     std::atomic<bool>   running { false };
+
+    // Device state, tracked separately from the session state above.
+    std::atomic<bool>   deviceActive { false };
+
+    // Output hold after an unexpected device stop (see
+    // isOutputSilencedForDeviceLoss). lostDeviceName is the device whose return
+    // releases it — the one that was playing when it stopped, or the user's
+    // chosen device for holdOutputForDeviceLoss() — guarded by nameLock;
+    // lossWallMs is when (wall clock, so an outage spanning sleep is measured).
+    std::atomic<bool>          deviceLossSilenced { false };
+    juce::String               lostDeviceName;
+    std::atomic<juce::int64>   lossWallMs { 0 };
+
+    // Set by the message thread to make the callback restart its settling
+    // window (samplesSinceStart is audio-thread state).
+    std::atomic<bool>   settleRestartRequested { false };
 
     // True once initialiseDevices() has run, so start() knows the current
     // selection is the user's and must not be replaced with system defaults.

@@ -6,6 +6,7 @@
 */
 
 #include "AnalysisProcessor.h"
+#include "ArtifactDetector.h"
 #include <cmath>
 
 namespace pnam
@@ -14,7 +15,7 @@ namespace pnam
 namespace
 {
     /** Largest block this processor will analyse in one call. Reference
-        samples are copied into fixed-size stack buffers of this length so
+        samples are copied into a preallocated scratch buffer of this length so
         the audio thread never allocates; blocks larger than this are
         truncated for analysis purposes (JUCE devices practically never
         exceed a few thousand samples per callback). */
@@ -94,6 +95,11 @@ void AnalysisProcessor::prepare (double newSampleRate, int maximumBlockSize, int
     samplesProcessed    = 0;
     samplesIntoInterval = 0;
 
+    // Allocated here (non-real-time, callback idle) and never resized again, so
+    // the audio thread only ever reads/writes existing storage.
+    if ((int) refScratch.size() != maxAnalysedBlockSamples)
+        refScratch.assign ((size_t) maxAnalysedBlockSamples, 0.0f);
+
     for (int ch = 0; ch < maxChannels; ++ch)
     {
         refSumSquares[ch]   = 0.0;
@@ -160,12 +166,16 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
     stats.numInputChannels = numInputChannelsThisBlock;
     stats.statusCode       = statusBitsFromEngine;
 
-    const int samplesToUse = juce::jlimit (0, maxAnalysedBlockSamples, juce::jmin (numSamples, maxBlock > 0 ? maxBlock : numSamples));
+    // Bounded by the scratch buffer prepare() allocated (empty before the first
+    // prepare(), in which case nothing is analysed rather than anything read
+    // out of bounds).
+    const int samplesToUse = juce::jlimit (0, juce::jmin (maxAnalysedBlockSamples, (int) refScratch.size()),
+                                           juce::jmin (numSamples, maxBlock > 0 ? maxBlock : numSamples));
 
     // One fixed-size scratch buffer, reused per channel — a per-channel array
-    // would be 64x larger for no benefit. Static storage keeps the audio-thread
-    // stack frame small and allocation-free.
-    static thread_local float refScratch[maxAnalysedBlockSamples];
+    // would be 64x larger for no benefit. A member rather than stack storage
+    // keeps the audio-thread stack frame small.
+    float* const refScratchData = refScratch.data();
 
     //--------------------------------------------------------------------
     // Reference: one independent stream per output channel.
@@ -178,14 +188,15 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
 
     for (int ch = 0; ch < refChannels; ++ch)
     {
-        reference.readLatest (refScratch, ch, samplesToUse, 0);
+        reference.readLatest (refScratchData, ch, samplesToUse, 0);
 
         float peak = 0.0f;
         double sumSquares = 0.0;
-        analyseChannel (refScratch, samplesToUse, peak, sumSquares);
+        analyseChannel (refScratchData, samplesToUse, peak, sumSquares);
 
         refPeakLinearBlock[ch] = peak;
         refSumSquaresBlock[ch] = sumSquares;
+        stats.refMeanSquare[ch] = sumSquares / (double) juce::jmax (1, samplesToUse);
 
         const float peakDb = linearToDb (peak);
         const float rmsDb  = linearToDb ((float) std::sqrt (sumSquares / (double) juce::jmax (1, samplesToUse)));
@@ -240,6 +251,7 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
 
         stats.inPeakDb[ch] = peakDb;
         stats.inRmsDb[ch]  = rmsDb;
+        stats.inMeanSquare[ch] = inSumSquaresBlock[ch] / (double) juce::jmax (1, samplesToUse);
 
         // Compare against whichever output this input is referenced to.
         const int refCh = juce::jlimit (0, refChannels - 1,
@@ -318,6 +330,15 @@ BlockStats AnalysisProcessor::processBlock (const float* const* input, int numIn
                                             referenceOutputForInput[ch].load (std::memory_order_relaxed));
             m.gainDiffDb[ch] = m.inRmsDb[ch] - m.refRmsDb[refCh];
             m.clipCountPerChannel[ch] = intervalClipCountPerChannel[ch];
+
+            if (artifactDetector != nullptr)
+            {
+                const auto figures = artifactDetector->takeIntervalFigures (ch);
+                m.residualDb[ch]      = figures.residualDb;
+                m.latencyMs[ch]       = figures.latencyMs;
+                m.clickCount[ch]      = figures.clickCount;
+                m.artifactAligned[ch] = figures.locked;
+            }
         }
 
         m.correlation = 0.0f;

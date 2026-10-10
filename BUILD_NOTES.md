@@ -349,3 +349,178 @@ A copy that was opened straight from a browser download runs from a read-only
 "translocated" path and cannot replace itself; the updater then shows the new
 version in Finder instead. Keeping the app in `/Applications` avoids that.
 
+## 7. Artifact detection and the October 2026 fixes
+
+### 7.1 What the artifact detector reports
+
+`Source/Core/ArtifactDetector` compares each monitored return against the
+reference that was actually sent. New event types (appended, so older numeric
+codes are unchanged):
+
+| Event | Meaning | Start/end or instant |
+|---|---|---|
+| `Click` (8) | An isolated impulse in the return: click, pop, tick, or a burst under ~60 ms. | instant |
+| `Noise` (9) | Non-reference energy spread evenly in time: static, hiss, crackle, buzz. Also raised when clicks arrive faster than 20 a second. | start/end; instant for a burst of corrupted audio |
+| `Distortion` (10) | The same rise, concentrated on the signal's own peaks: clipping or saturation somewhere in the path. | start/end |
+| `TimingSlip` (11) | The path's delay stepped: samples dropped or repeated. The size is reported in samples. | instant |
+| `SignalMismatch` (12) | The return is present but is not the reference: wrong routing, another source, destroyed audio. Critical. | start/end |
+
+`measurements.csv` gains three columns per monitored input: `_latency_ms`
+(round-trip latency), `_residual_db` (how much of the return is NOT the
+reference, relative to the part that is; a THD+N-like figure) and
+`_click_count` (every click in the interval, including those not given their own
+event). Latency and residual are **empty** while a return is not aligned; empty
+never means zero.
+
+Deliberately not artifacts: a change in level or polarity, a dropout, a muted
+output, steady clock drift. The level detectors report the first two.
+
+Limits, stated plainly:
+
+- The comparison band is about 200 Hz to 16 kHz. **Pure mains hum (50/60 Hz) or
+  a slow thump is not reliably reported.** Buzz with harmonics is.
+- Sensitivity depends on how well the path can be modelled. On the simulated
+  converter path in the test rig the residual floor is about -45 to -49 dB;
+  clicks down to 20 dB below the signal's RMS and hiss 30 dB below it are
+  caught. A path with heavy processing (EQ, crossover, dynamics) will have a
+  higher floor and proportionally lower sensitivity; the detector learns the
+  floor and reports only rises above it.
+- **Dynamics processing in the path is not supported.** A compressor or limiter
+  changes gain continuously in a way no fixed model can follow; an independent
+  review measured 1,500 to 2,100 false Click events in ten minutes through one.
+  Switch artifact detection off in Settings ("Detect clicks, noise, distortion
+  and timing slips") for such a path, or bypass the dynamics for the test.
+- A path the model cannot follow closely (a steep high-pass, a resonant EQ,
+  hum already present) raises no false events, but its residual floor is high
+  (about -13 to -16 dB in the test rig against -45 on a clean path), so only
+  gross faults will show there. `_residual_db` in the log tells you which
+  situation you are in.
+- Clocks that are not locked to each other: drift up to about 100 ppm is
+  followed without events, at a cost in sensitivity (the floor rose to about
+  -25 dB at 50 to 100 ppm). At 150 ppm and beyond it produces false
+  TimingSlips. Real interfaces are within a few tens of ppm.
+- Round-trip latency up to about 0.65 s can be found.
+- While a return is more than 20 dB below its expected level the comparison is
+  suspended (that is the dropout detector's territory): artifacts in that state
+  are not reported, and the latency/residual cells are empty.
+- Cost measured on an M4 Pro, every channel aligned, as a share of the callback
+  deadline at a 512-sample buffer: 8 channels at 48 kHz 1%; 16 at 96 kHz 4%;
+  32 at 96 kHz 8%; 64 at 192 kHz 34% (worst callback 70%). Fine for ordinary
+  rigs; at the very top of that range consider switching it off.
+
+### 7.2 What was verified, and how
+
+- **Offline, by fault injection** (`Tests/ArtifactDetectorTests.cpp`, all checks
+  passing): clicks from +20 to -20 dB re signal RMS; slips of -4096, -512,
+  -64, -1, +1, +64, +1024 samples (each reported once, size right to a fraction
+  of a sample); white noise at -10/-20/-30 dB; crackle; hard and soft clipping;
+  buzz; an unrelated signal; corrupted bursts of 20/150/800 ms; and that a 10 dB
+  level drop, a 6 dB rise, a 2 s dropout, a mute, a polarity flip and 20 ppm of
+  clock drift for 5 minutes report nothing. 80 minutes of clean signal across
+  48/96/192 kHz and 64 to 1024-sample buffers: zero events.
+- **Independently reviewed.** A second reviewer built the detector separately
+  and attacked it with its own cases. That found, and the rig now pins down:
+  noise as loud as the signal going unreported while it lasted; false clicks
+  through a steep high-pass, a resonant EQ or pre-existing hum; a Noise start
+  that never ended after the output level was lowered 20 dB; slips lost when
+  many channels slipped at once; a stale model after re-monitoring a channel;
+  an inverted path aligned on a sidelobe; and one NaN sample blinding a
+  channel. The `review` test group covers each.
+- **Not verified:** see the "Hardware status" line at the end of this section.
+
+### 7.3 Reliability fixes from the two code reviews
+
+Level detection (`EventDetector`):
+
+- Dropout is now relative to the expected level (20 dB below what the reference
+  and baseline predict, or the absolute floor) with exit hysteresis. The old
+  absolute -60 dBFS test sat 0.85 dB above this rig's muted floor: a model of
+  it flapped 131 start/end pairs in 10 minutes of one continuous loss, and a
+  pulled cable reading -50 dBFS from crosstalk never registered. Now: one pair.
+- Level change is judged on smoothed energies with an end hold, so steps of
+  8 to 15 dB are each one pair instead of missed, late or repeated. No
+  level-change evaluation during a dropout.
+- A Start is retried until queued; an End is never rate-limited.
+
+Engine and devices:
+
+- An unexpected device stop holds the output silent. Previously JUCE fell back
+  to the system default device and the app kept playing pink noise into it and
+  logging against it. The UI shows it in red, tries to get the saved interface
+  back, and resumes when it returns. Start Audio asks before playing through a
+  device that is not the saved one.
+- `running` survives a device restart, so Cmd-R can no longer zero the session
+  clock under an open log. A device start can no longer undo Mute.
+- The "expected device change" bracket (§3c) now covers only an actual
+  user-initiated change plus one second, not the lifetime of the Audio Device
+  Setup dialog: leaving that dialog open no longer hides a real device loss.
+
+Logging:
+
+- Timestamps re-anchor to the wall clock when the audio clock and wall clock
+  diverge by more than 2 s (sleep, a stalled device), with one row saying so.
+- A write error is retried every 3 s instead of ending logging for the session.
+- Pause now gates measurements only: events and markers are still written, and
+  "Logging paused" / "Logging resumed" rows mark the gap (supersedes §1).
+- A fault already active when Start Logging is pressed is written to the new
+  `events.csv`.
+- `events.csv` is rewritten atomically when a note is amended.
+- A system-sleep assertion is held while logging, replacing the manual
+  `caffeinate` step in §5.
+
+UI:
+
+- The output-level slider no longer shows -20 dBFS after relaunch while the
+  generator plays the saved level.
+- Detection thresholds and notification settings persist.
+- Stop Audio, Stop Logging and Quit ask first while a session is being logged.
+- Start Logging runs a pre-flight and lists anything that would waste the run
+  (muted output, a monitored input at digital silence, a fault already active,
+  an unwritable or nearly full log folder).
+- A watchdog raises a Critical row if a running session stops delivering
+  measurements for 3 s.
+- Unmonitored inputs are drawn dimmed with "OFF". Errors get an alert and a
+  full-width red status instead of a 90-pixel cell.
+
+### 7.4 Hardware status
+
+Run on 2026-10-10 on the M4 Pro Mac mini with a UMC404HD, Out 1 cabled to In 1,
+48 kHz / 512, the app signed with the Developer ID under the hardened runtime.
+
+Verified on that hardware:
+
+- The detector aligns within seconds of Start Audio. Round-trip latency read
+  22.929 to 22.930 ms for the whole of every run; residual about -52 to -53 dB
+  (better than the simulated path's -45).
+- Several runs of five to twelve minutes at -20 dBFS: no dropout, level, noise,
+  distortion, slip or mismatch events.
+- Mute and unmute mid-run: no events; the latency/residual cells are empty
+  while muted and resume on the same alignment.
+- Output at -40 dBFS: 47 s with no events. Before the dropout fix in §7.3 this
+  exact case logged 15 dropout start/end events in 8 seconds; it was found on
+  the hardware, not in simulation.
+- Quit while logging asks first with "Keep Logging" as the default, and the run
+  continues. The sleep assertion is held while logging (`pmset -g assertions`).
+- The bundled icon is drawn correctly by the system at 16 to 256 px.
+
+Found on that hardware, and worth knowing about this rig: **a pair of faint
+ticks every 128.0 seconds** (two ticks 0.31 s apart, about -66 dBFS peak, 2 to 4
+samples long, roughly 24 dB under the signal). Six consecutive pairs arrived
+128.001 s apart to the millisecond. Nothing in the app runs on that schedule
+and the ticks are not aligned to audio buffers, so they are in the
+interface/USB path, not the software. They are far too small to hear. This is
+why clicks come in two tiers: one at least 20 dB-under-signal big is an event;
+smaller ones are counted in `_click_count` every interval and summarised in one
+Info row at most once an hour.
+
+NOT verified on hardware (simulated only, or not exercised at all):
+
+- Every injected fault: no real click, noise, distortion or timing slip has
+  been put through the interface, and no cable was pulled.
+- Device loss and recovery (unplugging the interface, the fallback hold, the
+  automatic return to the saved interface). This code was written from two code
+  reviews and compiles; none of it has been run against a real unplug.
+- More than one channel, 96 or 192 kHz, and any run of 1.1.0 longer than about
+  twelve minutes. The 60-hour run in July was 1.0.0.
+- An Intel Mac, or any macOS older than the build machine's.
+

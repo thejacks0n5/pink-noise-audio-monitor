@@ -25,6 +25,11 @@ const char* toString (EventType type) noexcept
         case EventType::AudioDeviceLost: return "AudioDeviceLost";
         case EventType::LoggingError:    return "LoggingError";
         case EventType::AudioSettingsChanged: return "AudioSettingsChanged";
+        case EventType::Click:           return "Click";
+        case EventType::Noise:           return "Noise";
+        case EventType::Distortion:      return "Distortion";
+        case EventType::TimingSlip:      return "TimingSlip";
+        case EventType::SignalMismatch:  return "SignalMismatch";
         case EventType::Other:
         default:                         return "Other";
     }

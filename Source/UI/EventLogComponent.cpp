@@ -21,26 +21,54 @@ namespace
         return juce::String (elapsedSeconds, 3);
     }
 
+    /** "CompleteDropout" -> "Complete Dropout", for the type filter. */
+    juce::String spacedTypeName (EventType type)
+    {
+        const juce::String name (toString (type));
+        juce::String spaced;
+
+        for (int i = 0; i < name.length(); ++i)
+        {
+            if (i > 0 && juce::CharacterFunctions::isUpperCase (name[i]))
+                spaced << ' ';
+
+            spaced << name[i];
+        }
+
+        return spaced;
+    }
+
     /** Tiny CallOutBox content: one TextEditor for naming a marker. */
     class MarkerNameEditor : public juce::Component
     {
     public:
         MarkerNameEditor (const juce::String& initialText,
                           std::function<void (const juce::String&)> commitFn)
-            : onCommit (std::move (commitFn))
+            : initial (initialText), onCommit (std::move (commitFn))
         {
             editor.setText (initialText, juce::dontSendNotification);
             editor.setSelectAllWhenFocused (true);
 
             editor.onReturnKey = [this]
             {
-                if (onCommit != nullptr && editor.getText().trim().isNotEmpty())
-                    onCommit (editor.getText().trim());
-
+                commit();
                 dismiss();
             };
-            editor.onEscapeKey = [this] { dismiss(); };
-            editor.onFocusLost = [this] { dismiss(); };
+
+            // Escape is the only way to throw the text away.
+            editor.onEscapeKey = [this]
+            {
+                finished = true;
+                dismiss();
+            };
+
+            // Clicking away keeps what was typed: discarding it lost notes with
+            // no sign that anything had gone.
+            editor.onFocusLost = [this]
+            {
+                commit();
+                dismiss();
+            };
 
             addAndMakeVisible (editor);
             setSize (260, 30);
@@ -54,6 +82,21 @@ namespace
         }
 
     private:
+        /** At most once: dismissing after Return takes the focus away, which
+            would otherwise commit the same text a second time. */
+        void commit()
+        {
+            if (finished)
+                return;
+
+            finished = true;
+
+            const auto text = editor.getText().trim();
+
+            if (onCommit != nullptr && text.isNotEmpty() && text != initial)
+                onCommit (text);
+        }
+
         void dismiss()
         {
             if (auto* box = findParentComponentOfClass<juce::CallOutBox>())
@@ -61,7 +104,9 @@ namespace
         }
 
         juce::TextEditor editor;
+        juce::String initial;
         std::function<void (const juce::String&)> onCommit;
+        bool finished = false;
     };
 
     juce::String formatTimestamp (juce::Time t)
@@ -125,6 +170,8 @@ namespace
 //==============================================================================
 EventLogComponent::EventLogComponent()
 {
+    std::fill (std::begin (typeVisible), std::end (typeVisible), true);
+
     addAndMakeVisible (severityFilterBox);
     severityFilterBox.addItem ("All severities", 1);
     severityFilterBox.addItem ("Warning+", 2);
@@ -142,29 +189,30 @@ EventLogComponent::EventLogComponent()
 
     addAndMakeVisible (typeFilterBox);
     typeFilterBox.addItem ("All types", 1);
-    typeFilterBox.addItem ("Complete Dropout", 2);
-    typeFilterBox.addItem ("Clipping", 3);
-    typeFilterBox.addItem ("Level Change", 4);
-    typeFilterBox.addItem ("Manual Marker", 5);
-    typeFilterBox.addItem ("Audio Device Lost", 6);
-    typeFilterBox.addItem ("Logging Error", 7);
-    typeFilterBox.addItem ("Other", 8);
-    typeFilterBox.addItem ("Settings Change", 9);
+
+    // One entry per EventType, taken from the enum (item id = type + 2), so a
+    // type appended to the model is filterable without this list being touched.
+    // A hand-written list had already fallen one short of the enum.
+    for (int i = 0; i < numEventTypes; ++i)
+        typeFilterBox.addItem (spacedTypeName ((EventType) i), i + 2);
+
     typeFilterBox.setSelectedId (1, juce::dontSendNotification);
     typeFilterBox.onChange = [this]
     {
         const int id = typeFilterBox.getSelectedId();
-        if (id == 1)
+        if (id <= 1)
         {
             showAllTypes();
         }
         else
         {
-            for (int i = 0; i < 7; ++i)
-                typeVisible[i] = false;
+            std::fill (std::begin (typeVisible), std::end (typeVisible), false);
 
-            typeVisible[id - 2] = true;
+            if (juce::isPositiveAndBelow (id - 2, numEventTypes))
+                typeVisible[id - 2] = true;
+
             rebuildFilteredIndex();
+            table.updateContent();
             repaint();
         }
     };
@@ -251,32 +299,63 @@ void EventLogComponent::cellDoubleClicked (int rowNumber, int columnId, const ju
     const bool renamingMarker = row.event.type == EventType::ManualMarker
                               && columnId == colDescription;
 
+    // SafePointer, not `this`: the edit is now also committed when the editor
+    // loses focus, which can happen as late as the callout being torn down.
+    juce::Component::SafePointer<EventLogComponent> safeThis (this);
+
     auto editor = std::make_unique<MarkerNameEditor> (
         renamingMarker ? row.description : row.note,
-        [this, matches, eventCopy, renamingMarker] (const juce::String& text)
+        [safeThis, matches, eventCopy, renamingMarker] (const juce::String& text)
         {
-            for (auto& r : rows)
+            if (safeThis == nullptr)
+                return;
+
+            const auto& forward = renamingMarker ? safeThis->onMarkerRenamed
+                                                 : safeThis->onNoteEdited;
+
+            const bool reachedCsv = forward != nullptr && forward (eventCopy, text);
+
+            for (auto& r : safeThis->rows)
                 if (matches (r.event))
                 {
                     (renamingMarker ? r.description : r.note) = text;
+                    (renamingMarker ? r.nameNotInCsv : r.noteNotInCsv) = ! reachedCsv;
                     break;
                 }
 
-            table.repaint();
-
-            if (renamingMarker)
-            {
-                if (onMarkerRenamed != nullptr)
-                    onMarkerRenamed (eventCopy, text);
-            }
-            else if (onNoteEdited != nullptr)
-                onNoteEdited (eventCopy, text);
+            safeThis->table.repaint();
         });
 
     const auto rowBounds = table.getRowPosition (rowNumber, true);
     juce::CallOutBox::launchAsynchronously (std::move (editor),
                                             table.localAreaToGlobal (rowBounds),
                                             nullptr);
+}
+
+void EventLogComponent::visitEventsSince (juce::int64 firstSequence,
+                                          const std::function<bool (const Event&,
+                                                                    const juce::String&,
+                                                                    const juce::String&)>& visitor)
+{
+    if (visitor == nullptr)
+        return;
+
+    // rows only ever loses entries from the front, so row i is event number
+    // (totalReceived - rows.size() + i) of the run.
+    const auto firstStored = totalReceived - (juce::int64) rows.size();
+
+    for (size_t i = 0; i < rows.size(); ++i)
+    {
+        if (firstStored + (juce::int64) i < firstSequence)
+            continue;
+
+        auto& row = rows[i];
+
+        if (visitor (row.event, row.description, row.note))
+            row.noteNotInCsv = row.nameNotInCsv = false;
+    }
+
+    table.repaint();
 }
 
 void EventLogComponent::setChannelNames (const juce::StringArray& outputNames,
@@ -324,7 +403,7 @@ void EventLogComponent::setMinimumSeverity (Severity minimum)
 void EventLogComponent::setTypeVisible (EventType type, bool shouldShow)
 {
     const int idx = (int) type;
-    if (idx < 0 || idx >= 7)
+    if (idx < 0 || idx >= numEventTypes)
         return;
 
     if (typeVisible[idx] != shouldShow)
@@ -339,7 +418,7 @@ void EventLogComponent::setTypeVisible (EventType type, bool shouldShow)
 bool EventLogComponent::isTypeVisible (EventType type) const noexcept
 {
     const int idx = (int) type;
-    if (idx < 0 || idx >= 7)
+    if (idx < 0 || idx >= numEventTypes)
         return true;
     return typeVisible[idx];
 }
@@ -489,8 +568,12 @@ void EventLogComponent::paintCell (juce::Graphics& g, int rowNumber, int columnI
                             justification = juce::Justification::centredRight; break;
         case colDifference: text = formatNumber (event.difference); useMono = true;
                             justification = juce::Justification::centredRight; break;
-        case colDescription: text = row.description; break;
-        case colNote:        text = row.note; break;
+        // An edit that could not be written to events.csv says so, in front of
+        // the text so a narrow column cannot truncate the warning away.
+        case colDescription: text = row.nameNotInCsv ? "[name not in CSV] " + row.description
+                                                     : row.description; break;
+        case colNote:        text = row.noteNotInCsv ? "[not in CSV] " + row.note
+                                                     : row.note; break;
         default: break;
     }
 

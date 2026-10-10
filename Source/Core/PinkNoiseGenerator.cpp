@@ -6,6 +6,7 @@
 */
 
 #include "PinkNoiseGenerator.h"
+#include <limits>
 
 namespace pnam
 {
@@ -75,6 +76,33 @@ void PinkNoiseGenerator::setSeed (uint64_t seed)
 uint64_t PinkNoiseGenerator::getSeed() const noexcept
 {
     return seedInUse;
+}
+
+uint64_t PinkNoiseGenerator::parseSeed (const juce::String& text) noexcept
+{
+    const auto trimmed = text.trim();
+
+    // Logs written before seeds were printed unsigned show the same 64 bits as
+    // a negative number; reinterpreting recovers the seed exactly.
+    if (trimmed.startsWithChar ('-'))
+        return (uint64_t) trimmed.getLargeIntValue();
+
+    uint64_t value = 0;
+
+    for (auto c : trimmed)
+    {
+        if (c < '0' || c > '9')
+            break;
+
+        const auto digit = (uint64_t) (c - '0');
+
+        if (value > (std::numeric_limits<uint64_t>::max() - digit) / 10u)
+            return std::numeric_limits<uint64_t>::max();
+
+        value = value * 10u + digit;
+    }
+
+    return value;
 }
 
 void PinkNoiseGenerator::prepare (double sampleRateIn, int maximumBlockSize)
@@ -154,6 +182,11 @@ void PinkNoiseGenerator::startFade (bool fadeIn) noexcept
     pendingFade.store (fadeIn ? 1 : -1, std::memory_order_relaxed);
 }
 
+void PinkNoiseGenerator::startFadeInFromSilence() noexcept
+{
+    pendingFade.store (2, std::memory_order_relaxed);
+}
+
 void PinkNoiseGenerator::setFadeTimeMs (double ms) noexcept
 {
     fadeTimeMsAtomic.store ((float) juce::jmax (1.0, ms), std::memory_order_relaxed);
@@ -190,6 +223,10 @@ void PinkNoiseGenerator::processBlock (float* const* out, int numChannels, int n
     {
         const double fadeSeconds = juce::jmax (0.001, fadeTimeMsAtomic.load (std::memory_order_relaxed) / 1000.0);
         fadeSmoother.reset (sampleRate, fadeSeconds);
+
+        if (pending == 2)
+            fadeSmoother.setCurrentAndTargetValue (0.0f);
+
         fadeSmoother.setTargetValue (pending > 0 ? 1.0f : 0.0f);
     }
 

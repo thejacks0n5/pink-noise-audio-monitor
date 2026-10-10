@@ -158,6 +158,14 @@ public:
         commandManager.registerAllCommandsForTarget (this);
         mainWindow->addKeyListener (commandManager.getKeyMappings());
 
+        // The transport items are named and enabled from the real engine/logger
+        // state (see getCommandInfo), so the menu has to be rebuilt when that
+        // state changes, including when a button rather than the menu changed it.
+        setApplicationCommandManagerToWatch (&commandManager);
+
+        if (auto* content = mainWindow->getMainComponent())
+            content->onTransportStateChanged = [this] { commandManager.commandStatusChanged(); };
+
        #if JUCE_MAC
         // Preferences goes in the application menu (next to About/Quit), which
         // is where macOS users expect it — and it picks up Cmd-, from the
@@ -183,6 +191,10 @@ public:
        #if JUCE_MAC
         juce::MenuBarModel::setMacMainMenu (nullptr);
        #endif
+
+        // Must be undone here: commandManager is a member and is gone by the
+        // time the MenuBarModel base class would stop watching it by itself.
+        setApplicationCommandManagerToWatch (nullptr);
 
         if (mainWindow != nullptr)
             if (auto* content = mainWindow->getMainComponent())
@@ -254,6 +266,12 @@ public:
 
     void getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result) override
     {
+        // Real state, so the transport items say what they will do and are
+        // greyed out when they would do nothing.
+        auto* content = mainWindow != nullptr ? mainWindow->getMainComponent() : nullptr;
+        const bool audioRunning  = content != nullptr && content->isAudioRunning();
+        const bool loggingActive = content != nullptr && content->isLoggingActive();
+
         switch (commandID)
         {
             case CommandIDs::showPreferences:
@@ -284,19 +302,25 @@ public:
                 return;
 
             case CommandIDs::toggleAudio:
-                result.setInfo ("Start/Stop Audio", "Toggle the pink-noise engine", "Transport", 0);
+                result.setInfo (audioRunning ? "Stop Audio" : "Start Audio",
+                                "Toggle the pink-noise engine", "Transport", 0);
                 result.addDefaultKeypress ('r', juce::ModifierKeys::commandModifier);
                 return;
 
             case CommandIDs::toggleLogging:
-                result.setInfo ("Start/Stop Logging", "Toggle CSV logging", "Transport", 0);
+                result.setInfo (loggingActive ? "Stop Logging" : "Start Logging",
+                                "Toggle CSV logging", "Transport", 0);
                 result.addDefaultKeypress ('l', juce::ModifierKeys::commandModifier);
+                // Logging can only start while audio runs; Cmd-L with audio
+                // stopped used to do nothing and say nothing.
+                result.setActive (loggingActive || audioRunning);
                 return;
 
             case CommandIDs::addMarker:
                 result.setInfo ("Add Marker", "Drop a manual marker into the log", "Transport", 0);
                 result.addDefaultKeypress ('m', juce::ModifierKeys::commandModifier
                                                   | juce::ModifierKeys::shiftModifier);
+                result.setActive (loggingActive);
                 return;
 
             case CommandIDs::showAbout:
@@ -391,6 +415,18 @@ public:
 
     void systemRequestedQuit() override
     {
+        // Cmd-Q and the window's close button both land here, and either one
+        // used to end an unattended logging run without a word. With a session
+        // active the user is asked first; quitting still works, one click later.
+        // With no session, confirmIfLogging runs the quit straight away.
+        if (auto* content = mainWindow != nullptr ? mainWindow->getMainComponent() : nullptr)
+        {
+            content->confirmIfLogging ("Quit",
+                                       "Quitting stops logging and closes this session's CSV files.",
+                                       [] { juce::JUCEApplicationBase::quit(); });
+            return;
+        }
+
         quit();
     }
 
