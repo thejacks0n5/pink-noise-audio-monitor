@@ -1,14 +1,14 @@
-# Pink Noise Audio Monitor (Version One)
+# Pink Noise Audio Monitor
 
-An overnight test-monitoring tool for macOS: generates a deterministic pink
-noise reference signal, plays it out through a chosen output device, listens
-to the corresponding input device, and continuously analyses/logs the two so
-you can detect dropouts, clipping, level drift, and correlation loss over long
-unattended runs.
+An unattended test-monitoring tool for macOS: it plays a deterministic pink
+noise reference out of an audio interface, listens to what comes back, and
+continuously compares and logs the two, so you can find dropouts, clipping,
+level changes, clicks, noise, distortion and timing slips in an audio path
+over runs that last hours or days. It also shows the path's round-trip delay
+live.
 
-This README covers building and running the **Version One foundation** — the
-scaffolding, core DSP/analysis engine, logging, and UI are all present; this
-is the base you build and iterate on from here.
+Current version: 1.2.0. Installed copies (1.0.2 or later) check the Releases
+page and offer to update themselves; nothing installs without asking.
 
 ## Quick start on another Mac
 
@@ -113,25 +113,26 @@ or virtual loopback so the app's own pink noise output becomes its input:
    - Set the app's **input device** to BlackHole 2ch.
    - Optionally create a Multi-Output Device in Audio MIDI Setup if you also
      want to hear the pink noise while it's routed through BlackHole.
-3. In the app: open device setup from the transport bar, select the devices
-   above, click **Start Audio**. You should see the reference and input
-   meters and waveform track each other closely, `gainDiffDb` sit near 0 dB,
-   and correlation read near 1.0. Click **Start Logging** to begin writing
-   CSVs; try a brief mute or a disconnected input to confirm dropout/clipping
-   events show up in the event log and get written to `events.csv`.
+3. In the app: click **Audio Setup**, select the devices above and the
+   channels that are actually cabled, untick Monitor on any input with nothing
+   patched in, then click **Start Audio**. The reference and input meters and
+   waveform lanes should move together, and within a few seconds the DELAY
+   strip should show the round-trip delay. Click **Start Logging** to begin
+   writing CSVs. Pulling the input cable should log one dropout start and,
+   on reconnecting, one end.
 4. Logging needs a named log destination first: Logging menu → **Set Log
    File...** (Cmd-Shift-L). Each session writes a folder holding
    `measurements.csv`, `events.csv` and `session_info.txt`.
 
 ## Notes
 
-- This is the **Version One** foundation: core generator/analysis/event
-  detection, CSV session logging, local critical-event notifications, and the
-  full dark-themed UI are implemented against the fixed header contracts in
-  `Source/Model`, `Source/Core`, `Source/Logging`, `Source/Notifications`, and
-  `Source/UI`. `Source/Core/AudioEngine.h/.cpp` (the device-manager glue that
-  wires generator → reference history → analysis → event detector each audio
-  callback) is the integration layer described in `ARCHITECTURE.md` §5.
+- Where to read more: `CLAUDE.md` for the current architecture and rules;
+  `BUILD_NOTES.md` for the full record (what was done, every decision and
+  its reason, review findings, open items, reference tables);
+  `ARCHITECTURE.md` and `UI_DESIGN.md` for the original V1 design;
+  `docs/design/` for the icon and theme.
+- Settings are stored per machine in
+  `~/Library/Application Support/PinkNoiseAudioMonitor/`.
 - `CMakeLists.txt` globs all `Source/**/*.cpp` automatically, so newly added
   `.cpp` files are picked up on the next `cmake` configure/build without
   editing the build script.

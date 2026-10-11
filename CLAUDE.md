@@ -4,42 +4,55 @@ Context for Claude Code (or any coding agent) picking up this project. Read this
 
 ## What this is
 
-A professional audio testing/monitoring app for **macOS (Apple Silicon)**, written in
-**C++20 + JUCE 8.0.4**. It generates deterministic pink noise out an output, captures the
-returned signal on an input, aligns/compares them, and logs audio problems (dropouts,
-clipping, level changes, …) for long overnight test sessions.
+A professional audio testing/monitoring app for **macOS 12+** (universal: Apple Silicon and
+Intel), written in **C++20 + JUCE 8.0.4**. It generates deterministic pink noise out an output,
+captures the returned signal on an input, aligns and compares them, shows the round-trip delay
+live, and logs audio problems (dropouts, clipping, level changes, clicks, noise, distortion,
+timing slips, a return that is not the signal) for long unattended sessions.
 
-**Status:** V1 passed its defining test (a 60-hour run on a UMC404HD, July 2026:
-no crash, flat memory, monotonic clock). Since then (October 2026) it has gained
-in-app updates, artifact detection (clicks, noise, distortion, timing slips) and
-a round of reliability fixes from two code reviews. `BUILD_NOTES.md` is the
-operational record: §3b/§3c earlier fixes, §5 the overnight-run checklist, §6
-releasing, §7 artifact detection and the October fixes. **§7 lists what has and
-has not been verified on real hardware — read it before trusting a claim.**
+**Status (October 2026): version 1.2.0 is released.** Public repo
+`github.com/thejacks0n5/pink-noise-audio-monitor`; signed, notarized downloads on its Releases
+page; installed copies from 1.0.2 on update themselves from the latest release.
 
-**Target machine:** Mac mini, M4 Pro (Apple Silicon). Xcode + Core Audio + a real audio
-interface (or a loopback device like BlackHole) are needed to actually run and test it.
+- 1.0.0 passed V1's defining test (a 60-hour run on a UMC404HD, July 2026).
+- 1.0.2 added in-app updates. 1.1.0 added artifact detection, the fixes from two rounds of code
+  review, a blue theme and an app icon. 1.2.0 added the live delay monitor with calibration.
+- **Nothing newer than 1.0.0 has run for longer than about twelve minutes on hardware, and no
+  real fault or unplug has ever been put through it.** Read `BUILD_NOTES.md` §12 before trusting
+  a claim.
+
+**`BUILD_NOTES.md` is the record.** §1–5 the original V1 notes (annotated where superseded),
+§6 releasing, §7 artifact detection, §8 delay monitor, **§9 everything done and when, §10 every
+decision and why, §11 every review finding and its outcome, §12 open items / known limits / not
+verified, §13 reference tables** (events, CSV columns, defaults, settings keys, shortcuts).
+`docs/design/` holds the icon and theme sources and reasoning.
+
+**Development machine:** Mac mini, M4 Pro, with a Behringer UMC404HD (Out 1 cabled to In 1).
+Its measured figures are in `BUILD_NOTES.md` §12.4.
 
 ## Scope discipline — IMPORTANT
 
-Build **Version One only.** Do NOT start on advanced features until V1 compiles, runs
-overnight, and is dependable. V1 = device selection, deterministic pink noise + level,
-peak/RMS meters, basic waveform, start/stop logging, CSV measurement + event logs,
-dropout/clip/level-change detection, live event log, basic macOS notification, stable
-long-session operation. V1 has since grown multichannel support (per-channel analysis,
-detection, meters, naming and CSV columns), a required named log destination, and
-per-input Monitor toggles.
+V1 was built under "Version One only, no extra features". Everything since (updater, artifact
+detection, delay monitor, theme and icon) was added because the owner asked for it. **The rule
+now: build what the owner asks for and nothing else.** No unrequested features, refactors or
+"while I was there" changes.
 
 **Logging invariants worth preserving:** the session clock is monotonic (only
-`AudioEngine::start()` zeroes it, with the callback detached); one unresolved fault produces
-exactly one start/end pair and is NOT re-reported across suppression or device restarts;
-unmonitored inputs are excluded from `measurements.csv` entirely.
+`AudioEngine::start()` zeroes it, with the callback detached, and it refuses while a session is
+running); `timestamp_utc` never goes backwards; one unresolved fault produces exactly one
+start/end pair and is NOT re-reported across suppression or device restarts; a Start is never
+lost to rate limiting; unmonitored inputs are excluded from `measurements.csv` entirely; event
+type numbers are append-only.
 
-Explicitly **out of scope for now** (later phases): FFT/spectrum, transfer function,
-frequency-response/EQ/filter detection, compression/limiting detection, LUFS, session
-reports, email/phone notifications, and the VST3 plugin. The architecture leaves room
-for these, but don't build them yet. (Delay alignment is no longer out of scope: the
-artifact detector does it.)
+**Safety invariants:** pink noise must never come out of a device the user did not choose (an
+unexpected device stop holds the output silent); nothing may stop a logging session except the
+user (dialogs ask, with the safe button as default; the updater never installs by itself);
+default output level is −20 dBFS.
+
+Still **out of scope** until asked for: FFT/spectrum, transfer function,
+frequency-response/EQ/filter detection, compression/limiting detection, LUFS, session reports,
+email/phone notifications, the VST3 plugin. Offered but not built: a "delay moved from
+calibration" event (`BUILD_NOTES.md` §12.1).
 
 ## Architecture
 
@@ -61,8 +74,12 @@ Namespace `pnam` throughout. Modules under `Source/`:
 - `Core/ReferenceHistory` — preallocated ring buffer of recent reference samples for comparison.
 - `Core/AnalysisProcessor` — audio-thread per-block peak/RMS/gain-diff → emits `Measurement`s; exposes
   atomic getters the UI polls for live meters.
-- `Core/EventDetector` — audio-thread threshold checks (dropout / clip / level change) with
-  debounce + rate-limiting → emits `Event`s (start/end, not per-block).
+- `Core/EventDetector` — audio-thread level checks with debounce → emits `Event`s (start/end, not
+  per-block). **Dropout is relative:** the input 20 dB (`dropoutRelativeDb`) below the level the
+  reference and the learned baseline predict, with capped exit hysteresis; the absolute
+  `dropoutThresholdDb` only applies before a baseline exists. Level change is judged on 400 ms
+  smoothed energies. A Start is retried until queued; an End is never rate-limited. The reasons
+  are in `BUILD_NOTES.md` §10.3 — read them before changing a threshold rule.
 - `Core/ArtifactDetector` — audio-thread comparison of each return against the exact reference
   that was sent. Per monitored input it finds the round-trip delay (GCC-PHAT cross-correlation,
   computed on a background thread from a snapshot the audio thread captures), fits a 32-tap NLMS
@@ -121,6 +138,11 @@ Namespace `pnam` throughout. Modules under `Source/`:
   (source `Resources/Assets.xcassets`), bundled by CMake with `CFBundleIconName`; see the comment
   in `CMakeLists.txt` for why it is not `ICON_BIG` and how to rebuild it.
 
+Threads: the **audio thread** (device callback); the **message thread** (UI, logging,
+notifications, all device management); a low-priority **alignment thread** owned by `AudioEngine`
+that runs the artifact detector's cross-correlations (it polls; the audio thread never wakes it);
+and the updater's own background thread for network and signature checks.
+
 ## The one rule that matters most (real-time safety)
 
 The audio thread (`AudioEngine::audioDeviceIOCallbackWithContext` and everything it calls) must
@@ -156,42 +178,53 @@ The level detectors (`EventDetector`) and the logger have no in-repo tests yet.
 ## Build
 
 ```bash
-cmake -B build -G Xcode
-cmake --build build --config Debug
-# or open build/PinkNoiseAudioMonitor.xcodeproj in Xcode and build the app target
+cmake -B build-release -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+cmake --build build-release -j
+open "build-release/PinkNoiseAudioMonitor_artefacts/Release/Pink Noise Audio Monitor.app"
 ```
 
-First configure git-clones JUCE (several hundred MB) via FetchContent — needs network. First
-compile is slow (juce_dsp + juce_gui_extra). App bundle lands under `build/`. On first run macOS
-prompts for microphone permission — grant it or the input path sees silence. For a real loopback
-test you need output physically routed back to input, or an aggregate/loopback device (BlackHole).
+This is how every build has been made (Command Line Tools + CMake from Homebrew; the Xcode
+generator also works if the Xcode license is accepted). Without the architectures flag the build
+is arm64 only. First configure git-clones JUCE via FetchContent and needs network; if a build
+folder's cached JUCE location has gone, delete the folder and configure again. Expect zero
+warnings from anything under `Source/` (JUCE's own bundled code prints some).
 
-See `BUILD_NOTES.md` §3–4 for known discrepancies (notifications need signing/entitlements to
-actually display; settings dialog is intentionally minimal; waveform sampling is best-effort) and
-the full first-build checklist. `ARCHITECTURE.md` and `UI_DESIGN.md` have the design rationale.
+Things that bite:
 
-## Suggested session on a fresh machine (the overnight run)
+- **Launch the bundle with `open`, not by running the binary from a shell.** A shell child
+  inherits the shell's microphone access and hides entitlement problems.
+- **To try the app without touching real settings,** launch with the environment variable
+  `CFFIXED_USER_HOME` set to an empty folder
+  (`open -n --env CFFIXED_USER_HOME=/some/empty/dir <app>`).
+- A hardened-runtime (Developer ID) build needs the `com.apple.security.device.audio-input`
+  entitlement or every input reads −inf with no prompt. CMake sets it; sign with the generated
+  entitlements file (`BUILD_NOTES.md` §6).
+- The deployment target line must stay above `project()` in `CMakeLists.txt`.
+- **Publishing a release ships it** to every installed copy. Run the tests, sign, notarize,
+  write the release notes as plain text, then prove it by letting the previous release update
+  itself (`BUILD_NOTES.md` §6, §10.2).
 
-1. **Build.** `brew install cmake` if missing. `cmake -B build -G "Unix Makefiles"
-   -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j`. If the Xcode generator
-   complains, the Xcode license is unaccepted — the Makefiles/CLT route is how
-   every build so far was made. Expect zero errors and zero warnings; anything
-   else is a regression, not a known issue.
-2. **Configure for THIS machine's hardware** — settings do not travel between
-   machines. Follow `BUILD_NOTES.md` §5 in order: device + channel counts,
-   channel names, **Monitor unticked on unpatched inputs**, log destination,
-   mic permission, sleep prevention.
-3. **Smoke-test the loop**: Start Audio (Cmd-R), meters + waveform lanes live,
-   Start Logging (Cmd-L), drop + rename a marker (Cmd-Shift-M, double-click the
-   row), pull a cable to force a real dropout and confirm exactly ONE start
-   event, then one end on reconnect.
-4. **Overnight (the actual V1 acceptance test).** 12+ hours: no crash, flat
-   memory, monotonic `elapsed_s`, no runaway log growth, one start/end pair per
-   genuine fault, graceful recovery if the device hiccups.
-5. Only after that passes: next spec phase (delay/correlation alignment, then
-   FFT/frequency analysis).
+## How work is done here
 
-A good opening prompt for Claude Code on that machine: *"Read CLAUDE.md and
-BUILD_NOTES.md (especially §5), build the project, launch it, and help me
-configure it for this machine's audio interface and an overnight run. Verify
-each step on screen. Don't add features."*
+- Verify before claiming: build it, run it, look at it on screen, and say plainly whether a thing
+  was checked by simulation, on the real interface, or only by reading the code.
+- Before playing through the interface, confirm the loop quietly (start at −40 dBFS and check the
+  return) rather than assuming it is patched.
+- Non-trivial changes to detection, devices or logging get an independent review by someone who
+  did not write them; both rounds so far found real defects (`BUILD_NOTES.md` §11).
+- Hardware finds what simulation does not (two designs changed because of it). Prefer a few
+  minutes on the real interface to another simulated case.
+- When something changes behaviour, update `BUILD_NOTES.md` (§10 for the decision, §12 for
+  anything left open) and this file in the same change.
+
+## Where things stand, and what would be worth doing next
+
+Nothing is in progress. Open, in rough order of value (detail in `BUILD_NOTES.md` §12):
+
+1. **A long run of the current version,** with a cable pull and an interface unplug during it:
+   the only long run on record is 1.0.0, and device-loss recovery has never met a real unplug.
+2. **A real device of known delay** through the delay monitor.
+3. Decide on the offered "delay moved from calibration" event.
+4. Bring the level-detector and logger test harnesses into `Tests/` (the reviewers' were
+   throwaway and are gone).
+5. The smaller items in §12.1, §12.2 and §12.5.

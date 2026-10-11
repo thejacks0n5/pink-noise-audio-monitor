@@ -1,10 +1,45 @@
 # Pink Noise Audio Monitor — V1 UI Design
 
-> **Superseded in places (October 2026).** The palette in §2 is now the one in
-> `Source/UI/DarkLookAndFeel.h` (blue accent matched to the app icon; the hex
-> table below is the original and no longer what ships). The status bar no
-> longer has a MODE cell. Pause now gates measurements only; events and markers
-> are still written. `BUILD_NOTES.md` §7 lists the behaviour changes.
+> **This document is the original V1 interface design** and is kept as
+> written below. What ships now differs as follows; `BUILD_NOTES.md` §10.7
+> and §10.8 give the reasons and `docs/design/` the theme and icon sources.
+>
+> **Current state (October 2026, version 1.2.0):**
+>
+> - **Palette (§2).** The values in `Source/UI/DarkLookAndFeel.h` are the
+>   truth; the table in §2 is the original. Surfaces `#0A0B0D` window,
+>   `#15171B` / `#1A1C21` panels, `#23262D` / `#2B2E37` / `#363A45` controls,
+>   outline `#353942`. Text `#E8EAEE` / `#A4AAB5` / `#6E7480`. **Accent blue
+>   `#3391FF`** (dim `#3585E6`, bright and focus ring `#55A4FF`), matched to
+>   the icon. Meters and severity: green `#3BD1A9`, amber `#FFD452`, red
+>   `#FF6450`. Reference trace near-white `#CFD4E6`, input trace yellow-green
+>   `#C7EB75`, Info rows cool grey `#BCC2CD`: deliberately not blue, so they
+>   cannot be confused with the accent. Idle lamp `#555A65`.
+> - **Layout (§3)** is now, top to bottom: status bar (44) → transport (56) →
+>   **DELAY strip (58)** → meter column and waveform lanes → event log. The
+>   meter column grows with the channel count instead of being a fixed
+>   200 px, and the waveform is up to eight stacked lanes, each with its own
+>   channel selector.
+> - **Status bar:** no MODE cell. AUDIO also reads "NO DEVICE" or "Output
+>   held"; LOG shows "Paused m:ss" and "Write error"; a red, bold alert line
+>   replaces the right-hand status text when something is wrong. OUT, IN,
+>   channel, rate and buffer cells are click-to-edit.
+> - **Transport:** no Settings button (Settings is in the application menu,
+>   Cmd-,). Stop Audio and Stop Logging ask first while a session is logged.
+> - **Meters:** one bar per channel with its name; unmonitored inputs are
+>   dimmed with "OFF".
+> - **Event log:** a Note column; double-click to name a marker or add a note;
+>   the type filter is built from the event-type enum.
+> - **Dialogs** (§6 calls them modeless) are modal to the main window, though
+>   audio, logging and the timer keep running behind them. Audio Device Setup
+>   shows individual channels with naming, Monitor and reference rows that
+>   follow the device, and a Done button.
+> - **Pause** (§4, §6) gates measurements only; events and markers are still
+>   written.
+> - **The API manifest in §5** is the V1 one. Several classes have grown
+>   (multichannel setters, lanes, status-bar alert, `DelayMonitorComponent`);
+>   the headers are the contract.
+> - **The app has an icon** (asset catalog in `Resources/`).
 
 Namespace `pnam`. Headers under `Source/UI/`. Declarations only; bodies go in
 matching `.cpp` files. Modules: `juce_gui_basics`, `juce_gui_extra`,

@@ -1,4 +1,54 @@
-# Pink Noise Audio Monitor — V1 Core Architecture
+# Pink Noise Audio Monitor — Core Architecture
+
+> **This document is the original V1 design** and is kept as written. The
+> thread model and the "audio thread only pushes PODs" rule still hold. What
+> has changed since is summarised here; `CLAUDE.md` has the current module
+> list and `BUILD_NOTES.md` §10 the reasons.
+>
+> **Current state (October 2026, version 1.2.0):**
+>
+> - **Channels.** Not mono/stereo any more: up to `pnam::maxChannels` (64)
+>   inputs and outputs, in fixed arrays inside `Measurement` so it stays a
+>   POD. The generator makes an independent stream per output. Each input is
+>   compared against a chosen reference output and has a Monitor flag. The
+>   `inPeakDbL/R` fields in §6 below no longer exist; the CSV column set is
+>   derived per session (`BUILD_NOTES.md` §13.2).
+> - **Per-callback sequence** is now: generator to outputs (or silence while
+>   the output is held) → **`ArtifactDetector::processBlock`** (the return
+>   against the exact block just sent) → `AnalysisProcessor::processBlock`
+>   (which also collects the detector's per-interval figures into the
+>   `Measurement`) → `EventDetector::processBlockStats`.
+> - **A fourth module on the audio thread: `Core/ArtifactDetector`.** It
+>   aligns each return to its reference, models the path, and reports clicks,
+>   noise, distortion, timing slips and signal mismatch, plus latency and
+>   residual figures. Its delay search (an FFT cross-correlation) runs on a
+>   separate low-priority thread owned by `AudioEngine`; the two exchange a
+>   capture buffer through one atomic per channel.
+> - **`AudioEngine` has a header** and more state than §5 describes:
+>   `isRunning()` is the session, `isDeviceActive()` the device; an
+>   unexpected device stop holds the output silent; the callback is attached
+>   from launch with the output silenced so input meters are live before
+>   Start Audio; the destructor detaches the callback first.
+> - **Suppression.** §4 says open conditions are closed while a suppression
+>   bit is set. They are not: an active condition is carried across mute,
+>   fades, settling and device restarts, so one fault stays one start/end
+>   pair.
+> - **Detection rules** are no longer simple thresholds: dropout is relative
+>   to the predicted level, level change uses smoothed energies
+>   (`BUILD_NOTES.md` §10.3).
+> - **Clocking.** `elapsedSeconds` is still the audio clock and is carried
+>   forward across device restarts. Wall-clock stamps are no longer just
+>   `start + elapsed`: the logger slews for drift and steps forward across a
+>   sleep or stall, and never goes backwards.
+> - **Queues** are drained on the message thread in the 30 Hz timer, and also
+>   once at Start Audio and Start Logging. A full queue no longer loses a
+>   Start event: the detectors retry until it is queued.
+> - **Also on the message thread now:** `Update/UpdateChecker` (with its own
+>   worker thread for network and signature checks) and the device-recovery
+>   logic in `MainComponent`.
+> - **§7's "out of scope" list:** delay alignment is now done (by the
+>   artifact detector). `Measurement::correlation` is still always 0.
+> - **Platform:** universal binary, macOS 12 or later.
 
 macOS (Apple Silicon) standalone app, C++ / JUCE 8.x (CMake + FetchContent).
 Everything lives in namespace `pnam`. The headers under `Source/` are the

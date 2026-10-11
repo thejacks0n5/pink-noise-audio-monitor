@@ -49,8 +49,8 @@ namespace
     constexpr float  noiseEndHysteresisDb   = 4.0f;
     constexpr float  slipMinSamples         = 0.6f;
     constexpr double clickResidualFactor    = 6.0;
-    constexpr double clickHoldSeconds       = 0.1;
-    constexpr double smallClickReportSeconds = 3600.0;    // a click waits this long in case it was the start of something larger
+    constexpr double clickHoldSeconds       = 0.1;    // a click waits this long in case it was the start of something larger
+    constexpr double smallClickReportSeconds = 3600.0;   // small clicks are summarised at most this often
     constexpr double crackleRatePerSecond   = 20.0;   // this many clicks a second is no longer "clicks"
     constexpr double crackleQuietSeconds    = 0.3;    // ...and it has stopped after this long without one
     constexpr double clickRateSeconds       = 0.5;
